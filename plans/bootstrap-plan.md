@@ -76,8 +76,8 @@
 |---|---|---|---|
 | `PB-M6-T01` | Define `PlatformOps` trait boundary | `done` | Added trait/types in `planter-platform` (`create_cell_dirs`, `spawn_job`, `kill_job_tree`, `probe_usage`) |
 | `PB-M6-T02` | Hook `planterd` to platform abstraction | `done` | Daemon selects backend at startup and `StateStore` executes through `PlatformOps` |
-| `PB-M6-T03` | Implement `MacosOps` basic placeholder | `done` | Added basic process spawning + log plumbing in `planter-platform-macos` |
-| `PB-M6-T04` | Add TODO stubs (`compile_sandbox_profile`, `spawn_sandboxed`, `lease_user`) | `done` | Stub functions added with explicit TODO behavior |
+| `PB-M6-T03` | Implement `MacosOps` basic placeholder | `done` | Added process spawning + log plumbing + job metadata helpers in `planter-platform-macos` |
+| `PB-M6-T04` | Add TODO stubs (`compile_sandbox_profile`, `spawn_sandboxed`, `lease_user`) | `done` | Replaced stubs with concrete behavior (profile file generation, user leasing, process-tree kill, usage probe) |
 
 ## Milestone 7 — Dev ergonomics
 | Task ID | Task | Status | Notes |

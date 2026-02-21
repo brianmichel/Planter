@@ -1,0 +1,8 @@
+; broad read access for bootstrap compatibility
+(allow file-read*)
+
+; write access restricted to state root and temporary directory
+(allow file-write*
+  (subpath "{{STATE_ROOT}}")
+  (subpath "/tmp")
+)

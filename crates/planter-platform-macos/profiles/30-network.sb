@@ -1,0 +1,2 @@
+; network allowed for bootstrap workloads
+(allow network*)

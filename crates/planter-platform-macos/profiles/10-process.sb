@@ -1,0 +1,2 @@
+; process primitives needed for bootstrap execution
+(allow process*)
