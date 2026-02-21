@@ -67,7 +67,9 @@ impl StateStore {
         let path = self.cell_meta_path(cell_id);
         read_json(path).map_err(|err| match err.code {
             ErrorCode::Internal if err.message == "read json file" => {
-                if let Some(detail) = &err.detail && detail.contains("No such file") {
+                if let Some(detail) = &err.detail
+                    && detail.contains("No such file")
+                {
                     return PlanterError {
                         code: ErrorCode::NotFound,
                         message: format!("cell {} does not exist", cell_id.0),

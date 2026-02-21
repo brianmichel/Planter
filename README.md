@@ -7,7 +7,7 @@ The bootstrap scope includes `Version`, `Health`, `CellCreate`, and `JobRun`.
 Protocol version is currently fixed to `1`.
 
 Tooling is managed with `mise.toml` (Rust 1.93.0 + standard tasks):
-`mise run setup`, `mise run build`, `mise run test`, and `mise run smoke`.
+`mise run setup`, `mise run build`, `mise run lint`, `mise run test`, and `mise run smoke`.
 
 Run daemon directly:
 `cargo run -p planterd -- --socket /tmp/planterd.sock`

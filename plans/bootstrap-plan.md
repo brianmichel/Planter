@@ -79,12 +79,12 @@
 | `PB-M6-T03` | Implement `MacosOps` basic placeholder | `done` | Added basic process spawning + log plumbing in `planter-platform-macos` |
 | `PB-M6-T04` | Add TODO stubs (`compile_sandbox_profile`, `spawn_sandboxed`, `lease_user`) | `done` | Stub functions added with explicit TODO behavior |
 
-## Milestone 7 — Dev ergonomics (out of bootstrap scope)
+## Milestone 7 — Dev ergonomics
 | Task ID | Task | Status | Notes |
 |---|---|---|---|
-| `PB-M7-T01` | Add Makefile/justfile shortcuts | `todo` | Deferred |
-| `PB-M7-T02` | Add standalone `scripts/smoke.sh` | `todo` | Deferred |
-| `PB-M7-T03` | Add CI bootstrap workflow | `todo` | Deferred |
+| `PB-M7-T01` | Add Makefile/justfile shortcuts | `done` | Consolidated on `mise` tasks instead of adding duplicate wrappers |
+| `PB-M7-T02` | Add standalone `scripts/smoke.sh` | `done` | Consolidated on `mise run smoke` as the single smoke entrypoint |
+| `PB-M7-T03` | Add CI bootstrap workflow | `done` | Added GitHub Actions workflow at `.github/workflows/ci.yml` using `mise run` tasks |
 
 ## Bootstrap acceptance checks
 | Check ID | Validation | Status |
