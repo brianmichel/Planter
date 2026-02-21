@@ -5,6 +5,7 @@ use thiserror::Error;
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
     InvalidRequest,
+    NotFound,
     Timeout,
     ProtocolMismatch,
     Internal,

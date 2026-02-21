@@ -1,5 +1,6 @@
 mod dispatch;
 mod handlers;
+mod state;
 
 use std::{
     fs, io,
@@ -11,8 +12,9 @@ use std::{
 
 use clap::Parser;
 use dispatch::DaemonDispatcher;
-use planter_core::PROTOCOL_VERSION;
+use planter_core::{PROTOCOL_VERSION, default_state_dir};
 use planter_ipc::serve_unix;
+use state::StateStore;
 use tracing::info;
 
 #[derive(Debug, Parser)]
@@ -39,14 +41,17 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     prepare_socket_path(&args.socket)?;
 
+    let state = Arc::new(StateStore::new(default_state_dir())?);
+
     info!(
         socket = %args.socket.display(),
+        state_dir = %state.root().display(),
         daemon = env!("CARGO_PKG_VERSION"),
         protocol = PROTOCOL_VERSION,
         "starting planterd"
     );
 
-    serve_unix(&args.socket, Arc::new(DaemonDispatcher)).await?;
+    serve_unix(&args.socket, Arc::new(DaemonDispatcher::from(state))).await?;
     Ok(())
 }
 

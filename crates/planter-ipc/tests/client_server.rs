@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use planter_core::{PROTOCOL_VERSION, Request, Response};
+use planter_core::{ErrorCode, PROTOCOL_VERSION, Request, Response};
 use planter_ipc::{PlanterClient, RequestHandler, serve_unix};
 use tempfile::tempdir;
 use tokio::time::{Duration, sleep};
@@ -19,6 +19,11 @@ impl RequestHandler for TestHandler {
             Request::Health {} => Response::Health {
                 status: "ok".to_string(),
             },
+            Request::CellCreate { .. } | Request::JobRun { .. } => Response::Error {
+                code: ErrorCode::InvalidRequest,
+                message: "unsupported in test".to_string(),
+                detail: None,
+            },
         }
     }
 }
@@ -32,16 +37,20 @@ async fn client_server_version_and_health_roundtrip() {
     let server_socket = socket_path.clone();
     let server = tokio::spawn(async move { serve_unix(&server_socket, handler).await });
 
-    for _ in 0..50 {
-        if socket_path.exists() {
-            break;
+    let mut client = None;
+    for _ in 0..200 {
+        match PlanterClient::connect(&socket_path).await {
+            Ok(connected) => {
+                client = Some(connected);
+                break;
+            }
+            Err(planter_ipc::IpcError::Io(_)) => {
+                sleep(Duration::from_millis(10)).await;
+            }
+            Err(err) => panic!("client should connect: {err}"),
         }
-        sleep(Duration::from_millis(10)).await;
     }
-
-    let mut client = PlanterClient::connect(&socket_path)
-        .await
-        .expect("client should connect");
+    let mut client = client.expect("client should connect");
 
     let version = client
         .call(Request::Version {})
