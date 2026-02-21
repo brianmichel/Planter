@@ -1,0 +1,73 @@
+[tools]
+rust = "1.93.0"
+
+[tasks.setup]
+description = "Install toolchain and fetch Rust dependencies"
+run = "mise install && cargo fetch"
+
+[tasks.build]
+description = "Build the workspace"
+run = "cargo build"
+
+[tasks.test]
+description = "Run workspace tests"
+run = "cargo test"
+
+[tasks.fmt]
+description = "Format all Rust code"
+run = "cargo fmt --all"
+
+[tasks.clippy]
+description = "Run clippy with warnings denied"
+run = "cargo clippy --workspace --all-targets -- -D warnings"
+
+[tasks."run-daemon"]
+description = "Run planterd on default socket"
+run = "cargo run -p planterd -- --socket /tmp/planterd.sock"
+
+[tasks.version]
+description = "Query daemon version via CLI"
+run = "cargo run -p planter -- --socket /tmp/planterd.sock version"
+
+[tasks.health]
+description = "Query daemon health via CLI"
+run = "cargo run -p planter -- --socket /tmp/planterd.sock health"
+
+[tasks.smoke]
+description = "Start daemon, run version+health checks, then stop daemon"
+run = '''
+set -euo pipefail
+socket="/tmp/planterd.sock"
+log_file="/tmp/planterd-smoke.log"
+rm -f "$socket"
+
+cargo build -p planter -p planterd
+
+cargo run -p planterd -- --socket "$socket" >"$log_file" 2>&1 &
+pid=$!
+
+cleanup() {
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+for _ in {1..50}; do
+  if target/debug/planter --socket "$socket" health >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.1
+done
+
+if ! target/debug/planter --socket "$socket" health >/dev/null 2>&1; then
+  echo "smoke failed: daemon did not become healthy on $socket" >&2
+  if [ -f "$log_file" ]; then
+    echo "---- planterd log ----" >&2
+    cat "$log_file" >&2
+  fi
+  exit 1
+fi
+
+target/debug/planter --socket "$socket" version
+target/debug/planter --socket "$socket" health
+'''

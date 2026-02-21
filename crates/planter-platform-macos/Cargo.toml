@@ -1,0 +1,8 @@
+[package]
+name = "planter-platform-macos"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+planter-platform = { path = "../planter-platform" }

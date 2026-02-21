@@ -1,0 +1,25 @@
+[workspace]
+members = [
+  "crates/planter-core",
+  "crates/planter-ipc",
+  "crates/planter-platform",
+  "crates/planter-platform-macos",
+  "crates/planterd",
+  "crates/planter",
+]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.93"
+
+[workspace.dependencies]
+async-trait = "0.1"
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_cbor = "0.11"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
