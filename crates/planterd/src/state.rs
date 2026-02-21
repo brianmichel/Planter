@@ -2,27 +2,31 @@ use std::{
     collections::BTreeMap,
     fs, io,
     path::{Path, PathBuf},
-    process::Stdio,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use planter_core::{
     CellId, CellInfo, CellSpec, CommandSpec, ErrorCode, ExitStatus, JobId, JobInfo, PlanterError,
     now_ms,
 };
-use tokio::{process::Command, task};
+use planter_platform::{PlatformError, PlatformOps};
+use tokio::task;
 
-#[derive(Debug)]
 pub struct StateStore {
     root: PathBuf,
     id_counter: AtomicU64,
+    platform: Arc<dyn PlatformOps>,
 }
 
 impl StateStore {
-    pub fn new(root: PathBuf) -> Result<Self, PlanterError> {
+    pub fn new(root: PathBuf, platform: Arc<dyn PlatformOps>) -> Result<Self, PlanterError> {
         let store = Self {
             root,
             id_counter: AtomicU64::new(now_ms()),
+            platform,
         };
         store.ensure_layout()?;
         Ok(store)
@@ -43,14 +47,16 @@ impl StateStore {
 
         let cell_id = CellId(format!("cell-{}", self.next_id()));
         let created_at_ms = now_ms();
-        let dir = self.cells_dir().join(&cell_id.0);
-        fs::create_dir_all(&dir).map_err(|err| io_to_error("create cell directory", err))?;
+        let paths = self
+            .platform
+            .create_cell_dirs(&cell_id)
+            .map_err(platform_to_planter_error)?;
 
         let info = CellInfo {
             id: cell_id,
             spec,
             created_at_ms,
-            dir: dir.to_string_lossy().to_string(),
+            dir: paths.cell_dir.to_string_lossy().to_string(),
         };
 
         write_json(self.cell_meta_path(&info.id), &info)?;
@@ -58,19 +64,20 @@ impl StateStore {
     }
 
     pub fn load_cell(&self, cell_id: &CellId) -> Result<CellInfo, PlanterError> {
-        read_json(self.cell_meta_path(cell_id)).map_err(|err| match err.code {
-            ErrorCode::Internal if err.message.contains("No such file") => PlanterError {
-                code: ErrorCode::NotFound,
-                message: format!("cell {} does not exist", cell_id.0),
-                detail: None,
-            },
+        let path = self.cell_meta_path(cell_id);
+        read_json(path).map_err(|err| match err.code {
+            ErrorCode::Internal if err.message == "read json file" => {
+                if let Some(detail) = &err.detail && detail.contains("No such file") {
+                    return PlanterError {
+                        code: ErrorCode::NotFound,
+                        message: format!("cell {} does not exist", cell_id.0),
+                        detail: None,
+                    };
+                }
+                err
+            }
             _ => err,
         })
-    }
-
-    pub fn log_path(&self, job_id: &str, stderr: bool) -> PathBuf {
-        let suffix = if stderr { "stderr" } else { "stdout" };
-        self.logs_dir().join(format!("{job_id}.{suffix}.log"))
     }
 
     pub async fn run_job(
@@ -89,43 +96,25 @@ impl StateStore {
         }
 
         let job_id = JobId(format!("job-{}", self.next_id()));
-        let stdout_path = self.log_path(&job_id.0, false);
-        let stderr_path = self.log_path(&job_id.0, true);
-
-        let stdout_file = fs::File::create(&stdout_path)
-            .map_err(|err| io_to_error("create stdout log file", err))?;
-        let stderr_file = fs::File::create(&stderr_path)
-            .map_err(|err| io_to_error("create stderr log file", err))?;
-
-        let mut command = Command::new(&cmd.argv[0]);
-        if cmd.argv.len() > 1 {
-            command.args(&cmd.argv[1..]);
-        }
-
-        if let Some(cwd) = &cmd.cwd {
-            command.current_dir(cwd);
-        }
 
         let mut env = BTreeMap::new();
         env.extend(cell.spec.env.clone());
         env.extend(cmd.env.clone());
-        command.envs(env);
-        command.stdout(Stdio::from(stdout_file));
-        command.stderr(Stdio::from(stderr_file));
 
-        let mut child = command
-            .spawn()
-            .map_err(|err| io_to_error("spawn process", err))?;
+        let handle = self
+            .platform
+            .spawn_job(&job_id, &cell_id, &cmd, &env)
+            .map_err(platform_to_planter_error)?;
 
         let job = JobInfo {
             id: job_id.clone(),
             cell_id,
             command: cmd,
-            stdout_path: stdout_path.to_string_lossy().to_string(),
-            stderr_path: stderr_path.to_string_lossy().to_string(),
+            stdout_path: handle.stdout_path.to_string_lossy().to_string(),
+            stderr_path: handle.stderr_path.to_string_lossy().to_string(),
             started_at_ms: now_ms(),
             finished_at_ms: None,
-            pid: child.id(),
+            pid: handle.pid,
             status: ExitStatus::Running,
         };
 
@@ -133,6 +122,7 @@ impl StateStore {
 
         let root = self.root.clone();
         let job_id_for_task = job_id.clone();
+        let mut child = handle.child;
         task::spawn(async move {
             match child.wait().await {
                 Ok(status) => {
@@ -226,5 +216,21 @@ fn io_to_error(action: &str, err: io::Error) -> PlanterError {
         code: ErrorCode::Internal,
         message: action.to_string(),
         detail: Some(err.to_string()),
+    }
+}
+
+fn platform_to_planter_error(err: PlatformError) -> PlanterError {
+    match err {
+        PlatformError::Io(io_err) => io_to_error("platform io", io_err),
+        PlatformError::InvalidInput(message) => PlanterError {
+            code: ErrorCode::InvalidRequest,
+            message,
+            detail: None,
+        },
+        PlatformError::Unsupported(message) => PlanterError {
+            code: ErrorCode::Internal,
+            message: "platform unsupported".to_string(),
+            detail: Some(message),
+        },
     }
 }

@@ -330,6 +330,7 @@ dependencies = [
  "clap",
  "planter-core",
  "planter-ipc",
+ "serde_json",
  "thiserror",
  "tokio",
 ]
@@ -360,12 +361,19 @@ dependencies = [
 [[package]]
 name = "planter-platform"
 version = "0.1.0"
+dependencies = [
+ "planter-core",
+ "thiserror",
+ "tokio",
+]
 
 [[package]]
 name = "planter-platform-macos"
 version = "0.1.0"
 dependencies = [
+ "planter-core",
  "planter-platform",
+ "tokio",
 ]
 
 [[package]]
@@ -376,6 +384,8 @@ dependencies = [
  "clap",
  "planter-core",
  "planter-ipc",
+ "planter-platform",
+ "planter-platform-macos",
  "serde",
  "serde_json",
  "thiserror",

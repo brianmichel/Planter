@@ -14,8 +14,12 @@ use clap::Parser;
 use dispatch::DaemonDispatcher;
 use planter_core::{PROTOCOL_VERSION, default_state_dir};
 use planter_ipc::serve_unix;
+use planter_platform::PlatformOps;
 use state::StateStore;
 use tracing::info;
+
+#[cfg(target_os = "macos")]
+use planter_platform_macos::MacosOps;
 
 #[derive(Debug, Parser)]
 #[command(name = "planterd", about = "Planter daemon")]
@@ -41,7 +45,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     prepare_socket_path(&args.socket)?;
 
-    let state = Arc::new(StateStore::new(default_state_dir())?);
+    let state_dir = default_state_dir();
+    let platform = select_platform(state_dir.clone())?;
+    let state = Arc::new(StateStore::new(state_dir, platform)?);
 
     info!(
         socket = %args.socket.display(),
@@ -70,4 +76,17 @@ fn prepare_socket_path(path: &Path) -> io::Result<()> {
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err),
     }
+}
+
+#[cfg(target_os = "macos")]
+fn select_platform(root: PathBuf) -> Result<Arc<dyn PlatformOps>, io::Error> {
+    Ok(Arc::new(MacosOps::new(root)))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn select_platform(_root: PathBuf) -> Result<Arc<dyn PlatformOps>, io::Error> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "no platform backend configured for this target",
+    ))
 }

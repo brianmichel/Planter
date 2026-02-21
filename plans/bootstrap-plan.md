@@ -71,13 +71,13 @@
 | `PB-M5-T04` | Implement process spawn + stdout/stderr log capture | `done` | `JobRun` spawns process and captures logs to files |
 | `PB-M5-T05` | Implement `planter logs <job_id> -f` v1 (file tail) | `done` | CLI supports `logs` and `logs -f` direct file tail |
 
-## Milestone 6 — macOS backend skeleton (out of bootstrap scope)
+## Milestone 6 — macOS backend skeleton
 | Task ID | Task | Status | Notes |
 |---|---|---|---|
-| `PB-M6-T01` | Define `PlatformOps` trait boundary | `todo` | Deferred |
-| `PB-M6-T02` | Hook `planterd` to platform abstraction | `todo` | Deferred |
-| `PB-M6-T03` | Implement `MacosOps` basic placeholder | `todo` | Deferred |
-| `PB-M6-T04` | Add TODO stubs (`compile_sandbox_profile`, `spawn_sandboxed`, `lease_user`) | `todo` | Deferred |
+| `PB-M6-T01` | Define `PlatformOps` trait boundary | `done` | Added trait/types in `planter-platform` (`create_cell_dirs`, `spawn_job`, `kill_job_tree`, `probe_usage`) |
+| `PB-M6-T02` | Hook `planterd` to platform abstraction | `done` | Daemon selects backend at startup and `StateStore` executes through `PlatformOps` |
+| `PB-M6-T03` | Implement `MacosOps` basic placeholder | `done` | Added basic process spawning + log plumbing in `planter-platform-macos` |
+| `PB-M6-T04` | Add TODO stubs (`compile_sandbox_profile`, `spawn_sandboxed`, `lease_user`) | `done` | Stub functions added with explicit TODO behavior |
 
 ## Milestone 7 — Dev ergonomics (out of bootstrap scope)
 | Task ID | Task | Status | Notes |

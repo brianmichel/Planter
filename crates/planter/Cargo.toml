@@ -8,5 +8,6 @@ rust-version.workspace = true
 clap.workspace = true
 planter-core = { path = "../planter-core" }
 planter-ipc = { path = "../planter-ipc" }
+serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

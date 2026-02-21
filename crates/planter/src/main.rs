@@ -8,7 +8,7 @@ use std::{
 
 use clap::{Parser, Subcommand};
 use planter_core::{
-    CellId, CellSpec, CommandSpec, ErrorCode, Request, Response, default_state_dir,
+    CellId, CellSpec, CommandSpec, ErrorCode, JobInfo, Request, Response, default_state_dir,
 };
 use planter_ipc::PlanterClient;
 use thiserror::Error;
@@ -211,10 +211,32 @@ async fn run() -> Result<(), CliError> {
 }
 
 async fn stream_logs(job_id: &str, follow: bool, stderr: bool) -> Result<(), CliError> {
-    let path = default_state_dir().join("logs").join(format!(
-        "{job_id}.{}.log",
-        if stderr { "stderr" } else { "stdout" }
-    ));
+    let job_path = default_state_dir()
+        .join("jobs")
+        .join(format!("{job_id}.json"));
+
+    let job_bytes = std::fs::read(&job_path).map_err(|err| {
+        if err.kind() == io::ErrorKind::NotFound {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("job metadata not found: {}", job_path.display()),
+            )
+        } else {
+            err
+        }
+    })?;
+    let job: JobInfo = serde_json::from_slice(&job_bytes).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid job metadata at {}: {err}", job_path.display()),
+        )
+    })?;
+
+    let path = if stderr {
+        PathBuf::from(job.stderr_path)
+    } else {
+        PathBuf::from(job.stdout_path)
+    };
 
     let mut printed = 0_usize;
 
