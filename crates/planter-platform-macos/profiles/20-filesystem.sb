@@ -1,8 +1,25 @@
-; broad read access for bootstrap compatibility
-(allow file-read*)
+; baseline executable/runtime reads
+(allow file-read*
+  (subpath "/System")
+  (subpath "/usr")
+  (subpath "/bin")
+  (subpath "/sbin")
+  (subpath "/etc")
+  (subpath "/private/etc")
+  (subpath "/var/select")
+  (subpath "/private/var/select")
+  (subpath "/Library")
+  (subpath "/private/tmp")
+  (subpath "{{STATE_ROOT}}")
+  (subpath "{{STATE_ROOT_REAL}}")
+)
 
-; write access restricted to state root and temporary directory
+; writes restricted to state root, cell dir, and temporary scratch
 (allow file-write*
   (subpath "{{STATE_ROOT}}")
+  (subpath "{{STATE_ROOT_REAL}}")
+  (subpath "{{CELL_DIR}}")
+  (subpath "{{CELL_DIR_REAL}}")
   (subpath "/tmp")
+  (subpath "/private/tmp")
 )

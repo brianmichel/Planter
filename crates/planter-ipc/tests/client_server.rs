@@ -19,7 +19,17 @@ impl RequestHandler for TestHandler {
             Request::Health {} => Response::Health {
                 status: "ok".to_string(),
             },
-            Request::CellCreate { .. } | Request::JobRun { .. } => Response::Error {
+            Request::CellCreate { .. }
+            | Request::JobRun { .. }
+            | Request::JobStatus { .. }
+            | Request::JobKill { .. }
+            | Request::CellRemove { .. }
+            | Request::LogsRead { .. }
+            | Request::PtyOpen { .. }
+            | Request::PtyInput { .. }
+            | Request::PtyRead { .. }
+            | Request::PtyResize { .. }
+            | Request::PtyClose { .. } => Response::Error {
                 code: ErrorCode::InvalidRequest,
                 message: "unsupported in test".to_string(),
                 detail: None,

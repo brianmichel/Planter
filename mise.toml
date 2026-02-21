@@ -33,6 +33,39 @@ run = "mise run fmt-check && mise run clippy"
 description = "Run planterd on default socket"
 run = "cargo run -p planterd -- --socket /tmp/planterd.sock"
 
+[tasks."daemon-dev"]
+description = "Run planterd with configurable socket/sandbox defaults for local development"
+run = '''
+set -euo pipefail
+socket="${PLANTER_SOCKET:-/tmp/planterd.sock}"
+sandbox_mode="${PLANTER_SANDBOX_MODE:-permissive}"
+cargo run -p planterd -- --socket "$socket" --sandbox-mode "$sandbox_mode"
+'''
+
+[tasks."session-new"]
+description = "Create a new interactive planter PTY session and attach to it"
+raw = true
+run = '''
+set -euo pipefail
+socket="${PLANTER_SOCKET:-/tmp/planterd.sock}"
+shell_bin="${PLANTER_SHELL:-/bin/zsh}"
+cli_bin="target/debug/planter"
+
+if [ ! -x "$cli_bin" ]; then
+  cargo build -q -p planter
+fi
+if [ ! -x "$shell_bin" ]; then
+  echo "planter: shell '$shell_bin' is not executable; falling back to /bin/zsh" >&2
+  shell_bin="/bin/zsh"
+fi
+
+open_out=$("$cli_bin" --socket "$socket" session open --shell "$shell_bin")
+session_id=$(echo "$open_out" | awk '{print $1}')
+
+echo "opened planter session $session_id"
+exec "$cli_bin" --socket "$socket" session attach "$session_id" < /dev/tty > /dev/tty
+'''
+
 [tasks.version]
 description = "Query daemon version via CLI"
 run = "cargo run -p planter -- --socket /tmp/planterd.sock version"

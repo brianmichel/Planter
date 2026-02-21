@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use planter_core::{
-    CellId, CellSpec, CommandSpec, ErrorCode, PROTOCOL_VERSION, ReqId, Request, RequestEnvelope,
-    Response, ResponseEnvelope,
+    CellId, CellSpec, CommandSpec, ErrorCode, LogStream, PROTOCOL_VERSION, ReqId, Request,
+    RequestEnvelope, ResourceLimits, Response, ResponseEnvelope, SessionId,
 };
 
 #[test]
@@ -32,6 +32,37 @@ fn request_envelope_roundtrip_cbor() {
     let decoded: RequestEnvelope<Request> =
         serde_cbor::from_slice(&encoded).expect("request decode should succeed");
     assert_eq!(decoded, create_request);
+
+    let logs_request = RequestEnvelope {
+        req_id: ReqId(44),
+        body: Request::LogsRead {
+            job_id: planter_core::JobId("job-1".to_string()),
+            stream: LogStream::Stdout,
+            offset: 0,
+            max_bytes: 1024,
+            follow: true,
+            wait_ms: 500,
+        },
+    };
+    let encoded = serde_cbor::to_vec(&logs_request).expect("request encode should succeed");
+    let decoded: RequestEnvelope<Request> =
+        serde_cbor::from_slice(&encoded).expect("request decode should succeed");
+    assert_eq!(decoded, logs_request);
+
+    let pty_request = RequestEnvelope {
+        req_id: ReqId(45),
+        body: Request::PtyRead {
+            session_id: SessionId(7),
+            offset: 128,
+            max_bytes: 2048,
+            follow: true,
+            wait_ms: 250,
+        },
+    };
+    let encoded = serde_cbor::to_vec(&pty_request).expect("request encode should succeed");
+    let decoded: RequestEnvelope<Request> =
+        serde_cbor::from_slice(&encoded).expect("request decode should succeed");
+    assert_eq!(decoded, pty_request);
 }
 
 #[test]
@@ -75,6 +106,11 @@ fn response_envelope_roundtrip_cbor() {
                     argv: vec!["echo".to_string(), "ok".to_string()],
                     cwd: None,
                     env: BTreeMap::new(),
+                    limits: Some(ResourceLimits {
+                        timeout_ms: Some(1000),
+                        max_rss_bytes: None,
+                        max_log_bytes: None,
+                    }),
                 },
                 stdout_path: "/tmp/stdout.log".to_string(),
                 stderr_path: "/tmp/stderr.log".to_string(),
@@ -82,6 +118,7 @@ fn response_envelope_roundtrip_cbor() {
                 finished_at_ms: None,
                 pid: Some(100),
                 status: planter_core::ExitStatus::Running,
+                termination_reason: None,
             },
         },
     };
@@ -90,4 +127,38 @@ fn response_envelope_roundtrip_cbor() {
     let decoded: ResponseEnvelope<Response> =
         serde_cbor::from_slice(&encoded).expect("response decode should succeed");
     assert_eq!(decoded, run_response);
+
+    let logs = ResponseEnvelope {
+        req_id: ReqId(4),
+        body: Response::LogsChunk {
+            job_id: planter_core::JobId("job-1".to_string()),
+            stream: LogStream::Stdout,
+            offset: 0,
+            data: b"hello".to_vec(),
+            eof: true,
+            complete: true,
+        },
+    };
+
+    let encoded = serde_cbor::to_vec(&logs).expect("response encode should succeed");
+    let decoded: ResponseEnvelope<Response> =
+        serde_cbor::from_slice(&encoded).expect("response decode should succeed");
+    assert_eq!(decoded, logs);
+
+    let pty = ResponseEnvelope {
+        req_id: ReqId(5),
+        body: Response::PtyChunk {
+            session_id: SessionId(7),
+            offset: 128,
+            data: b"shell".to_vec(),
+            eof: false,
+            complete: false,
+            exit_code: None,
+        },
+    };
+
+    let encoded = serde_cbor::to_vec(&pty).expect("response encode should succeed");
+    let decoded: ResponseEnvelope<Response> =
+        serde_cbor::from_slice(&encoded).expect("response decode should succeed");
+    assert_eq!(decoded, pty);
 }

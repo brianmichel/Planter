@@ -1,2 +1,14 @@
 ; process primitives needed for bootstrap execution
 (allow process*)
+
+; shell/runtime introspection + service lookups used by interactive shells
+(allow sysctl-read)
+(allow mach-lookup
+  (global-name "com.apple.system.notification_center")
+  (global-name "com.apple.system.opendirectoryd.libinfo")
+)
+
+; terminal ioctls for pty-backed interactive shells
+(allow file-ioctl
+  (subpath "/dev")
+)

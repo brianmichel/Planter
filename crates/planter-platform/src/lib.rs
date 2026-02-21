@@ -15,7 +15,7 @@ pub trait PlatformOps: Send + Sync {
         env: &BTreeMap<String, String>,
     ) -> Result<JobHandle, PlatformError>;
 
-    fn kill_job_tree(&self, job_id: &JobId) -> Result<(), PlatformError>;
+    fn kill_job_tree(&self, job_id: &JobId, force: bool) -> Result<(), PlatformError>;
 
     fn probe_usage(&self, job_id: &JobId) -> Result<Option<JobUsage>, PlatformError>;
 }

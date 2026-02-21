@@ -1,5 +1,6 @@
 mod dispatch;
 mod handlers;
+mod pty;
 mod state;
 
 use std::{
@@ -10,22 +11,32 @@ use std::{
     sync::Arc,
 };
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use dispatch::DaemonDispatcher;
 use planter_core::{PROTOCOL_VERSION, default_state_dir};
 use planter_ipc::serve_unix;
 use planter_platform::PlatformOps;
+use pty::PtySandboxMode;
 use state::StateStore;
 use tracing::info;
 
 #[cfg(target_os = "macos")]
-use planter_platform_macos::MacosOps;
+use planter_platform_macos::{MacosOps, SandboxMode};
 
 #[derive(Debug, Parser)]
 #[command(name = "planterd", about = "Planter daemon")]
 struct Args {
     #[arg(long, default_value = "/tmp/planterd.sock")]
     socket: PathBuf,
+    #[arg(long, value_enum, default_value_t = SandboxModeArg::Permissive)]
+    sandbox_mode: SandboxModeArg,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum SandboxModeArg {
+    Disabled,
+    Permissive,
+    Enforced,
 }
 
 #[tokio::main]
@@ -46,12 +57,17 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     prepare_socket_path(&args.socket)?;
 
     let state_dir = default_state_dir();
-    let platform = select_platform(state_dir.clone())?;
-    let state = Arc::new(StateStore::new(state_dir, platform)?);
+    let platform = select_platform(state_dir.clone(), args.sandbox_mode)?;
+    let state = Arc::new(StateStore::new(
+        state_dir,
+        platform,
+        args.sandbox_mode.to_pty_mode(),
+    )?);
 
     info!(
         socket = %args.socket.display(),
         state_dir = %state.root().display(),
+        sandbox_mode = %args.sandbox_mode.as_str(),
         daemon = env!("CARGO_PKG_VERSION"),
         protocol = PROTOCOL_VERSION,
         "starting planterd"
@@ -79,14 +95,40 @@ fn prepare_socket_path(path: &Path) -> io::Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn select_platform(root: PathBuf) -> Result<Arc<dyn PlatformOps>, io::Error> {
-    Ok(Arc::new(MacosOps::new(root)))
+fn select_platform(root: PathBuf, mode: SandboxModeArg) -> Result<Arc<dyn PlatformOps>, io::Error> {
+    let sandbox_mode = match mode {
+        SandboxModeArg::Disabled => SandboxMode::Disabled,
+        SandboxModeArg::Permissive => SandboxMode::Permissive,
+        SandboxModeArg::Enforced => SandboxMode::Enforced,
+    };
+    Ok(Arc::new(MacosOps::new(root, sandbox_mode)))
 }
 
 #[cfg(not(target_os = "macos"))]
-fn select_platform(_root: PathBuf) -> Result<Arc<dyn PlatformOps>, io::Error> {
+fn select_platform(
+    _root: PathBuf,
+    _mode: SandboxModeArg,
+) -> Result<Arc<dyn PlatformOps>, io::Error> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "no platform backend configured for this target",
     ))
+}
+
+impl SandboxModeArg {
+    fn as_str(self) -> &'static str {
+        match self {
+            SandboxModeArg::Disabled => "disabled",
+            SandboxModeArg::Permissive => "permissive",
+            SandboxModeArg::Enforced => "enforced",
+        }
+    }
+
+    fn to_pty_mode(self) -> PtySandboxMode {
+        match self {
+            SandboxModeArg::Disabled => PtySandboxMode::Disabled,
+            SandboxModeArg::Permissive => PtySandboxMode::Permissive,
+            SandboxModeArg::Enforced => PtySandboxMode::Enforced,
+        }
+    }
 }
