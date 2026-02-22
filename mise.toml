@@ -2,8 +2,14 @@
 rust = "1.93.0"
 
 [tasks.setup]
-description = "Install toolchain and fetch Rust dependencies"
-run = "mise install && cargo fetch"
+description = "Install toolchain, required Rust components, and fetch dependencies"
+run = '''
+set -euo pipefail
+mise install
+toolchain="$(rustup show active-toolchain | awk '{print $1}')"
+rustup component add --toolchain "$toolchain" rustfmt clippy
+cargo fetch
+'''
 
 [tasks.build]
 description = "Build the workspace"
@@ -23,7 +29,7 @@ run = "cargo test --workspace --tests"
 
 [tasks.precommit]
 description = "Format, run unit tests, then run integration tests"
-run = "mise run fmt && mise run test-unit && mise run test-integration"
+run = "mise run lint && mise run fmt && mise run test-unit && mise run test-integration"
 
 [tasks.fmt]
 description = "Format all Rust code"
