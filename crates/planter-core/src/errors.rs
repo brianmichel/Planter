@@ -8,6 +8,7 @@ pub enum ErrorCode {
     NotFound,
     Timeout,
     ProtocolMismatch,
+    Unavailable,
     Internal,
 }
 

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{CellId, ErrorCode, JobId, ReqId, SessionId};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestEnvelope<T> {
@@ -88,8 +88,6 @@ pub struct JobInfo {
     pub id: JobId,
     pub cell_id: CellId,
     pub command: CommandSpec,
-    pub stdout_path: String,
-    pub stderr_path: String,
     pub started_at_ms: u64,
     pub finished_at_ms: Option<u64>,
     pub pid: Option<u32>,

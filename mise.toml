@@ -13,6 +13,18 @@ run = "cargo build"
 description = "Run workspace tests"
 run = "cargo test"
 
+[tasks."test-unit"]
+description = "Run workspace unit tests"
+run = "cargo test --workspace --lib"
+
+[tasks."test-integration"]
+description = "Run workspace integration tests"
+run = "cargo test --workspace --tests"
+
+[tasks.precommit]
+description = "Format, run unit tests, then run integration tests"
+run = "mise run fmt && mise run test-unit && mise run test-integration"
+
 [tasks.fmt]
 description = "Format all Rust code"
 run = "cargo fmt --all"
@@ -38,7 +50,7 @@ description = "Run planterd with configurable socket/sandbox defaults for local 
 run = '''
 set -euo pipefail
 socket="${PLANTER_SOCKET:-/tmp/planterd.sock}"
-sandbox_mode="${PLANTER_SANDBOX_MODE:-permissive}"
+sandbox_mode="${PLANTER_SANDBOX_MODE:-enforced}"
 cargo run -p planterd -- --socket "$socket" --sandbox-mode "$sandbox_mode"
 '''
 

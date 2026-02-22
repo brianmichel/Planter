@@ -1,7 +1,8 @@
 mod dispatch;
 mod handlers;
-mod pty;
 mod state;
+mod worker;
+mod worker_manager;
 
 use std::{
     fs, io,
@@ -16,7 +17,6 @@ use dispatch::DaemonDispatcher;
 use planter_core::{PROTOCOL_VERSION, default_state_dir};
 use planter_ipc::serve_unix;
 use planter_platform::PlatformOps;
-use pty::PtySandboxMode;
 use state::StateStore;
 use tracing::info;
 
@@ -58,11 +58,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let state_dir = default_state_dir();
     let platform = select_platform(state_dir.clone(), args.sandbox_mode)?;
-    let state = Arc::new(StateStore::new(
-        state_dir,
-        platform,
-        args.sandbox_mode.to_pty_mode(),
-    )?);
+    let state = Arc::new(StateStore::new(state_dir, platform)?);
 
     info!(
         socket = %args.socket.display(),
@@ -121,14 +117,6 @@ impl SandboxModeArg {
             SandboxModeArg::Disabled => "disabled",
             SandboxModeArg::Permissive => "permissive",
             SandboxModeArg::Enforced => "enforced",
-        }
-    }
-
-    fn to_pty_mode(self) -> PtySandboxMode {
-        match self {
-            SandboxModeArg::Disabled => PtySandboxMode::Disabled,
-            SandboxModeArg::Permissive => PtySandboxMode::Permissive,
-            SandboxModeArg::Enforced => PtySandboxMode::Enforced,
         }
     }
 }

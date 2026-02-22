@@ -13,16 +13,17 @@ use planter_core::{
     CellId, CellInfo, CellSpec, CommandSpec, ErrorCode, ExitStatus, JobId, JobInfo, LogStream,
     PlanterError, SessionId, TerminationReason, now_ms,
 };
+use planter_execd_proto::{ExecPtyAction, ExecRequest, ExecResponse};
 use planter_platform::{PlatformError, PlatformOps};
-use tokio::{task, time::sleep};
+use tokio::time::sleep;
 
-use crate::pty::{PtyManager, PtyOpenResult, PtyReadResult, PtySandboxMode};
+use crate::worker_manager::WorkerManager;
 
 pub struct StateStore {
     root: PathBuf,
     id_counter: AtomicU64,
     platform: Arc<dyn PlatformOps>,
-    pty: Arc<PtyManager>,
+    workers: Arc<WorkerManager>,
 }
 
 pub struct LogsReadResult {
@@ -37,17 +38,56 @@ pub struct JobKillResult {
     pub signal: String,
 }
 
+pub struct PtyOpenResult {
+    pub session_id: SessionId,
+    pub pid: Option<u32>,
+}
+
+pub struct PtyReadResult {
+    pub offset: u64,
+    pub data: Vec<u8>,
+    pub eof: bool,
+    pub complete: bool,
+    pub exit_code: Option<i32>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct StoredJobInfo {
+    id: JobId,
+    cell_id: CellId,
+    command: CommandSpec,
+    stdout_path: String,
+    stderr_path: String,
+    started_at_ms: u64,
+    finished_at_ms: Option<u64>,
+    pid: Option<u32>,
+    status: ExitStatus,
+    #[serde(default)]
+    termination_reason: Option<TerminationReason>,
+}
+
+impl StoredJobInfo {
+    fn to_public(&self) -> JobInfo {
+        JobInfo {
+            id: self.id.clone(),
+            cell_id: self.cell_id.clone(),
+            command: self.command.clone(),
+            started_at_ms: self.started_at_ms,
+            finished_at_ms: self.finished_at_ms,
+            pid: self.pid,
+            status: self.status.clone(),
+            termination_reason: self.termination_reason,
+        }
+    }
+}
+
 impl StateStore {
-    pub fn new(
-        root: PathBuf,
-        platform: Arc<dyn PlatformOps>,
-        pty_sandbox_mode: PtySandboxMode,
-    ) -> Result<Self, PlanterError> {
+    pub fn new(root: PathBuf, platform: Arc<dyn PlatformOps>) -> Result<Self, PlanterError> {
         let store = Self {
             root: root.clone(),
             id_counter: AtomicU64::new(now_ms()),
             platform,
-            pty: Arc::new(PtyManager::new(root, pty_sandbox_mode)),
+            workers: Arc::new(WorkerManager::new(root.clone())),
         };
         store.ensure_layout()?;
         Ok(store)
@@ -98,6 +138,10 @@ impl StateStore {
     }
 
     pub fn load_job(&self, job_id: &JobId) -> Result<JobInfo, PlanterError> {
+        Ok(self.load_job_record(job_id)?.to_public())
+    }
+
+    fn load_job_record(&self, job_id: &JobId) -> Result<StoredJobInfo, PlanterError> {
         let path = self.job_path(job_id);
         if !path.exists() {
             return Err(PlanterError {
@@ -131,70 +175,85 @@ impl StateStore {
         env.extend(cell.spec.env.clone());
         env.extend(cmd.env.clone());
 
-        let handle = self
-            .platform
-            .spawn_job(&job_id, &cell_id, &cmd, &env)
-            .map_err(platform_to_planter_error)?;
+        let stdout_path = self.logs_dir().join(format!("{}.stdout.log", job_id.0));
+        let stderr_path = self.logs_dir().join(format!("{}.stderr.log", job_id.0));
+        let response = self
+            .workers
+            .call(
+                &cell_id,
+                ExecRequest::RunJob {
+                    job_id: job_id.clone(),
+                    cmd: cmd.clone(),
+                    env: env.clone(),
+                    stdout_path: stdout_path.display().to_string(),
+                    stderr_path: stderr_path.display().to_string(),
+                },
+            )
+            .await?;
+        let pid = match response {
+            ExecResponse::JobStarted {
+                job_id: started,
+                pid,
+            } if started == job_id => pid,
+            other => return Err(unexpected_worker_response("run job", other)),
+        };
 
-        let job = JobInfo {
+        let job = StoredJobInfo {
             id: job_id.clone(),
             cell_id,
             command: cmd,
-            stdout_path: handle.stdout_path.to_string_lossy().to_string(),
-            stderr_path: handle.stderr_path.to_string_lossy().to_string(),
+            stdout_path: stdout_path.display().to_string(),
+            stderr_path: stderr_path.display().to_string(),
             started_at_ms: now_ms(),
             finished_at_ms: None,
-            pid: handle.pid,
+            pid,
             status: ExitStatus::Running,
             termination_reason: None,
         };
 
         write_json(self.job_path(&job_id), &job)?;
-
-        let root = self.root.clone();
-        let job_id_for_task = job_id.clone();
-        let mut child = handle.child;
-        task::spawn(async move {
-            match child.wait().await {
-                Ok(status) => {
-                    if let Err(err) = finalize_job_status(
-                        &root,
-                        &job_id_for_task,
-                        ExitStatus::Exited {
-                            code: status.code(),
-                        },
-                        Some(TerminationReason::Exited),
-                    ) {
-                        tracing::error!(error = %err, job_id = %job_id_for_task.0, "failed to persist finished job state");
-                    }
-                }
-                Err(err) => {
-                    tracing::error!(error = %err, job_id = %job_id_for_task.0, "failed while waiting for job process");
-                }
-            }
-        });
-
-        Ok(job)
+        Ok(job.to_public())
     }
 
-    pub fn kill_job(&self, job_id: &JobId, force: bool) -> Result<JobKillResult, PlanterError> {
-        let mut job = self.load_job(job_id)?;
+    pub async fn kill_job(
+        &self,
+        job_id: &JobId,
+        force: bool,
+    ) -> Result<JobKillResult, PlanterError> {
+        let mut job = self.load_job_record(job_id)?;
         if matches!(job.status, ExitStatus::Running) {
-            self.platform
-                .kill_job_tree(job_id, force)
-                .map_err(platform_to_planter_error)?;
-            job.status = ExitStatus::Exited { code: None };
-            job.finished_at_ms = Some(now_ms());
-            job.termination_reason = Some(if force {
-                TerminationReason::ForcedKill
-            } else {
-                TerminationReason::TerminatedByUser
-            });
+            let response = self
+                .workers
+                .call(
+                    &job.cell_id,
+                    ExecRequest::JobSignal {
+                        job_id: job_id.clone(),
+                        force,
+                    },
+                )
+                .await?;
+            match response {
+                ExecResponse::JobStatus {
+                    job_id: returned,
+                    status,
+                    finished_at_ms,
+                    termination_reason,
+                } if returned == *job_id => {
+                    job.status = status;
+                    job.finished_at_ms = finished_at_ms.or(Some(now_ms()));
+                    job.termination_reason = termination_reason.or(Some(if force {
+                        TerminationReason::ForcedKill
+                    } else {
+                        TerminationReason::TerminatedByUser
+                    }));
+                }
+                other => return Err(unexpected_worker_response("job signal", other)),
+            }
             write_json(self.job_path(job_id), &job)?;
         }
 
         Ok(JobKillResult {
-            job,
+            job: job.to_public(),
             signal: if force {
                 "KILL".to_string()
             } else {
@@ -213,7 +272,7 @@ impl StateStore {
             });
         }
 
-        let running_jobs: Vec<JobInfo> = self
+        let running_jobs: Vec<StoredJobInfo> = self
             .jobs_for_cell(cell_id)?
             .into_iter()
             .filter(|job| matches!(job.status, ExitStatus::Running))
@@ -228,10 +287,8 @@ impl StateStore {
         }
 
         if force {
+            self.workers.stop_worker(cell_id, true)?;
             for mut job in running_jobs {
-                self.platform
-                    .kill_job_tree(&job.id, true)
-                    .map_err(platform_to_planter_error)?;
                 job.status = ExitStatus::Exited { code: None };
                 job.finished_at_ms = Some(now_ms());
                 job.termination_reason = Some(TerminationReason::ForcedKill);
@@ -261,7 +318,7 @@ impl StateStore {
         let max_bytes = usize::try_from(max_bytes.max(1)).unwrap_or(1024 * 64);
 
         loop {
-            let job = self.load_job(job_id)?;
+            let job = self.load_job_record(job_id)?;
             let log_path = match stream {
                 LogStream::Stdout => PathBuf::from(&job.stdout_path),
                 LogStream::Stderr => PathBuf::from(&job.stderr_path),
@@ -311,7 +368,7 @@ impl StateStore {
         }
     }
 
-    pub fn open_pty(
+    pub async fn open_pty(
         &self,
         shell: String,
         args: Vec<String>,
@@ -320,11 +377,45 @@ impl StateStore {
         cols: u16,
         rows: u16,
     ) -> Result<PtyOpenResult, PlanterError> {
-        self.pty.open(shell, args, cwd, env, cols, rows)
+        let response = self
+            .workers
+            .call(
+                &default_pty_cell_id(),
+                ExecRequest::PtyOpen {
+                    shell,
+                    args,
+                    cwd,
+                    env,
+                    cols,
+                    rows,
+                },
+            )
+            .await?;
+        match response {
+            ExecResponse::PtyOpened { session_id, pid } => Ok(PtyOpenResult { session_id, pid }),
+            other => Err(unexpected_worker_response("pty open", other)),
+        }
     }
 
-    pub fn pty_input(&self, session_id: SessionId, data: Vec<u8>) -> Result<(), PlanterError> {
-        self.pty.input(session_id, data)
+    pub async fn pty_input(
+        &self,
+        session_id: SessionId,
+        data: Vec<u8>,
+    ) -> Result<(), PlanterError> {
+        let response = self
+            .workers
+            .call(
+                &default_pty_cell_id(),
+                ExecRequest::PtyInput { session_id, data },
+            )
+            .await?;
+        match response {
+            ExecResponse::PtyAck {
+                session_id: ack_id,
+                action: ExecPtyAction::Input,
+            } if ack_id == session_id => Ok(()),
+            other => Err(unexpected_worker_response("pty input", other)),
+        }
     }
 
     pub async fn pty_read(
@@ -335,25 +426,82 @@ impl StateStore {
         follow: bool,
         wait_ms: u64,
     ) -> Result<PtyReadResult, PlanterError> {
-        self.pty
-            .read(session_id, offset, max_bytes, follow, wait_ms)
-            .await
+        let response = self
+            .workers
+            .call(
+                &default_pty_cell_id(),
+                ExecRequest::PtyRead {
+                    session_id,
+                    offset,
+                    max_bytes,
+                    follow,
+                    wait_ms,
+                },
+            )
+            .await?;
+        match response {
+            ExecResponse::PtyChunk {
+                session_id: chunk_id,
+                offset,
+                data,
+                eof,
+                complete,
+                exit_code,
+            } if chunk_id == session_id => Ok(PtyReadResult {
+                offset,
+                data,
+                eof,
+                complete,
+                exit_code,
+            }),
+            other => Err(unexpected_worker_response("pty read", other)),
+        }
     }
 
-    pub fn pty_resize(
+    pub async fn pty_resize(
         &self,
         session_id: SessionId,
         cols: u16,
         rows: u16,
     ) -> Result<(), PlanterError> {
-        self.pty.resize(session_id, cols, rows)
+        let response = self
+            .workers
+            .call(
+                &default_pty_cell_id(),
+                ExecRequest::PtyResize {
+                    session_id,
+                    cols,
+                    rows,
+                },
+            )
+            .await?;
+        match response {
+            ExecResponse::PtyAck {
+                session_id: ack_id,
+                action: ExecPtyAction::Resize,
+            } if ack_id == session_id => Ok(()),
+            other => Err(unexpected_worker_response("pty resize", other)),
+        }
     }
 
-    pub fn pty_close(&self, session_id: SessionId, force: bool) -> Result<(), PlanterError> {
-        self.pty.close(session_id, force)
+    pub async fn pty_close(&self, session_id: SessionId, force: bool) -> Result<(), PlanterError> {
+        let response = self
+            .workers
+            .call(
+                &default_pty_cell_id(),
+                ExecRequest::PtyClose { session_id, force },
+            )
+            .await?;
+        match response {
+            ExecResponse::PtyAck {
+                session_id: ack_id,
+                action: ExecPtyAction::Closed,
+            } if ack_id == session_id => Ok(()),
+            other => Err(unexpected_worker_response("pty close", other)),
+        }
     }
 
-    fn jobs_for_cell(&self, cell_id: &CellId) -> Result<Vec<JobInfo>, PlanterError> {
+    fn jobs_for_cell(&self, cell_id: &CellId) -> Result<Vec<StoredJobInfo>, PlanterError> {
         let mut jobs = Vec::new();
         let entries =
             fs::read_dir(self.jobs_dir()).map_err(|err| io_to_error("read jobs directory", err))?;
@@ -365,7 +513,7 @@ impl StateStore {
                 continue;
             }
 
-            let job: JobInfo = read_json(path)?;
+            let job: StoredJobInfo = read_json(path)?;
             if job.cell_id == *cell_id {
                 jobs.push(job);
             }
@@ -429,22 +577,6 @@ fn read_log_chunk(
     }
 }
 
-fn finalize_job_status(
-    root: &Path,
-    job_id: &JobId,
-    status: ExitStatus,
-    reason: Option<TerminationReason>,
-) -> Result<(), PlanterError> {
-    let path = root.join("jobs").join(format!("{}.json", job_id.0));
-    let mut job: JobInfo = read_json(path.clone())?;
-    job.finished_at_ms = Some(now_ms());
-    job.status = status;
-    if job.termination_reason.is_none() {
-        job.termination_reason = reason;
-    }
-    write_json(path, &job)
-}
-
 fn write_json<T: serde::Serialize>(path: PathBuf, value: &T) -> Result<(), PlanterError> {
     let json = serde_json::to_vec_pretty(value).map_err(|err| PlanterError {
         code: ErrorCode::Internal,
@@ -485,5 +617,17 @@ fn platform_to_planter_error(err: PlatformError) -> PlanterError {
             message: "platform unsupported".to_string(),
             detail: Some(message),
         },
+    }
+}
+
+fn default_pty_cell_id() -> CellId {
+    CellId("cell-pty-default".to_string())
+}
+
+fn unexpected_worker_response(action: &str, response: ExecResponse) -> PlanterError {
+    PlanterError {
+        code: ErrorCode::Internal,
+        message: format!("unexpected worker response for {action}"),
+        detail: Some(format!("{response:?}")),
     }
 }

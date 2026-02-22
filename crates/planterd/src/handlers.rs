@@ -15,118 +15,122 @@ impl Handler {
     }
 
     pub async fn handle(&self, request: Request) -> Response {
-        let result =
-            match request {
-                Request::Version {} => Ok(Response::Version {
-                    daemon: env!("CARGO_PKG_VERSION").to_string(),
-                    protocol: PROTOCOL_VERSION,
-                }),
-                Request::Health {} => Ok(Response::Health {
-                    status: "ok".to_string(),
-                }),
-                Request::CellCreate { spec } => self
-                    .state
-                    .create_cell(spec)
-                    .map(|cell| Response::CellCreated { cell }),
-                Request::JobRun { cell_id, cmd } => self
-                    .state
-                    .run_job(cell_id, cmd)
+        let result = match request {
+            Request::Version {} => Ok(Response::Version {
+                daemon: env!("CARGO_PKG_VERSION").to_string(),
+                protocol: PROTOCOL_VERSION,
+            }),
+            Request::Health {} => Ok(Response::Health {
+                status: "ok".to_string(),
+            }),
+            Request::CellCreate { spec } => self
+                .state
+                .create_cell(spec)
+                .map(|cell| Response::CellCreated { cell }),
+            Request::JobRun { cell_id, cmd } => self
+                .state
+                .run_job(cell_id, cmd)
+                .await
+                .map(|job| Response::JobStarted { job }),
+            Request::JobStatus { job_id } => self
+                .state
+                .load_job(&job_id)
+                .map(|job| Response::JobStatus { job }),
+            Request::JobKill { job_id, force } => {
+                self.state
+                    .kill_job(&job_id, force)
                     .await
-                    .map(|job| Response::JobStarted { job }),
-                Request::JobStatus { job_id } => self
-                    .state
-                    .load_job(&job_id)
-                    .map(|job| Response::JobStatus { job }),
-                Request::JobKill { job_id, force } => {
-                    self.state
-                        .kill_job(&job_id, force)
-                        .map(|result| Response::JobKilled {
-                            job_id,
-                            signal: result.signal,
-                            status: result.job.status,
-                        })
-                }
-                Request::CellRemove { cell_id, force } => self
-                    .state
-                    .remove_cell(&cell_id, force)
-                    .map(|()| Response::CellRemoved { cell_id }),
-                Request::LogsRead {
+                    .map(|result| Response::JobKilled {
+                        job_id,
+                        signal: result.signal,
+                        status: result.job.status,
+                    })
+            }
+            Request::CellRemove { cell_id, force } => self
+                .state
+                .remove_cell(&cell_id, force)
+                .map(|()| Response::CellRemoved { cell_id }),
+            Request::LogsRead {
+                job_id,
+                stream,
+                offset,
+                max_bytes,
+                follow,
+                wait_ms,
+            } => self
+                .state
+                .read_logs(&job_id, stream, offset, max_bytes, follow, wait_ms)
+                .await
+                .map(|chunk| Response::LogsChunk {
                     job_id,
                     stream,
-                    offset,
-                    max_bytes,
-                    follow,
-                    wait_ms,
-                } => self
-                    .state
-                    .read_logs(&job_id, stream, offset, max_bytes, follow, wait_ms)
-                    .await
-                    .map(|chunk| Response::LogsChunk {
-                        job_id,
-                        stream,
-                        offset: chunk.offset,
-                        data: chunk.data,
-                        eof: chunk.eof,
-                        complete: chunk.complete,
-                    }),
-                Request::PtyOpen {
-                    shell,
-                    args,
-                    cwd,
-                    env,
-                    cols,
-                    rows,
-                } => self
-                    .state
-                    .open_pty(shell, args, cwd, env, cols, rows)
-                    .map(|opened| Response::PtyOpened {
-                        session_id: opened.session_id,
-                        pid: opened.pid,
-                    }),
-                Request::PtyInput { session_id, data } => self
-                    .state
-                    .pty_input(session_id, data)
-                    .map(|()| Response::PtyAck {
-                        session_id,
-                        action: PtyAction::Input,
-                    }),
-                Request::PtyRead {
+                    offset: chunk.offset,
+                    data: chunk.data,
+                    eof: chunk.eof,
+                    complete: chunk.complete,
+                }),
+            Request::PtyOpen {
+                shell,
+                args,
+                cwd,
+                env,
+                cols,
+                rows,
+            } => self
+                .state
+                .open_pty(shell, args, cwd, env, cols, rows)
+                .await
+                .map(|opened| Response::PtyOpened {
+                    session_id: opened.session_id,
+                    pid: opened.pid,
+                }),
+            Request::PtyInput { session_id, data } => self
+                .state
+                .pty_input(session_id, data)
+                .await
+                .map(|()| Response::PtyAck {
                     session_id,
-                    offset,
-                    max_bytes,
-                    follow,
-                    wait_ms,
-                } => self
-                    .state
-                    .pty_read(session_id, offset, max_bytes, follow, wait_ms)
-                    .await
-                    .map(|chunk| Response::PtyChunk {
-                        session_id,
-                        offset: chunk.offset,
-                        data: chunk.data,
-                        eof: chunk.eof,
-                        complete: chunk.complete,
-                        exit_code: chunk.exit_code,
-                    }),
-                Request::PtyResize {
+                    action: PtyAction::Input,
+                }),
+            Request::PtyRead {
+                session_id,
+                offset,
+                max_bytes,
+                follow,
+                wait_ms,
+            } => self
+                .state
+                .pty_read(session_id, offset, max_bytes, follow, wait_ms)
+                .await
+                .map(|chunk| Response::PtyChunk {
                     session_id,
-                    cols,
-                    rows,
-                } => self
-                    .state
-                    .pty_resize(session_id, cols, rows)
-                    .map(|()| Response::PtyAck {
-                        session_id,
-                        action: PtyAction::Resize,
-                    }),
-                Request::PtyClose { session_id, force } => self
-                    .state
-                    .pty_close(session_id, force)
-                    .map(|()| Response::PtyAck {
-                        session_id,
-                        action: PtyAction::Closed,
-                    }),
-            };
+                    offset: chunk.offset,
+                    data: chunk.data,
+                    eof: chunk.eof,
+                    complete: chunk.complete,
+                    exit_code: chunk.exit_code,
+                }),
+            Request::PtyResize {
+                session_id,
+                cols,
+                rows,
+            } => self
+                .state
+                .pty_resize(session_id, cols, rows)
+                .await
+                .map(|()| Response::PtyAck {
+                    session_id,
+                    action: PtyAction::Resize,
+                }),
+            Request::PtyClose { session_id, force } => self
+                .state
+                .pty_close(session_id, force)
+                .await
+                .map(|()| Response::PtyAck {
+                    session_id,
+                    action: PtyAction::Closed,
+                }),
+        };
 
         match result {
             Ok(response) => response,
@@ -153,14 +157,12 @@ mod tests {
     use tempfile::tempdir;
     use tokio::time::sleep;
 
-    use crate::{pty::PtySandboxMode, state::StateStore};
+    use crate::state::StateStore;
 
     fn test_handler(state_root: std::path::PathBuf) -> Handler {
         let platform = Arc::new(MacosOps::new(state_root.clone(), SandboxMode::Disabled));
-        let state = Arc::new(
-            StateStore::new(state_root, platform, PtySandboxMode::Disabled)
-                .expect("state should initialize"),
-        );
+        let state =
+            Arc::new(StateStore::new(state_root, platform).expect("state should initialize"));
         Handler::new(state)
     }
 

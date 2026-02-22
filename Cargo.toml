@@ -2,6 +2,8 @@
 members = [
   "crates/planter-core",
   "crates/planter-ipc",
+  "crates/planter-execd-proto",
+  "crates/planter-execd",
   "crates/planter-platform",
   "crates/planter-platform-macos",
   "crates/planterd",
@@ -23,6 +25,6 @@ serde_cbor = "0.11"
 serde_json = "1"
 tempfile = "3"
 thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "time", "signal", "process"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "time", "signal", "process", "sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }

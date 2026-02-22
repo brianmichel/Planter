@@ -3,6 +3,7 @@ use std::{
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
+    process::Command as StdCommand,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -15,6 +16,7 @@ use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system}
 use tokio::time::sleep;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum PtySandboxMode {
     Disabled,
     Permissive,
@@ -22,6 +24,7 @@ pub enum PtySandboxMode {
 }
 
 const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
+const NESTED_SANDBOX_PROBE_PROFILE: &str = "(version 1) (allow default)";
 const PROFILE_FRAGMENTS: &[(&str, &str)] = &[
     (
         "00-header",
@@ -40,6 +43,12 @@ const PROFILE_FRAGMENTS: &[(&str, &str)] = &[
         include_str!("../../planter-platform-macos/profiles/30-network.sb"),
     ),
 ];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NestedSandboxCapability {
+    Available,
+    BlockedByParentSandbox,
+}
 
 pub struct PtyManager {
     state_root: PathBuf,
@@ -137,10 +146,15 @@ impl PtyManager {
                 .try_wait()
                 .map_err(|err| pty_to_error("probe sandboxed pty process", err.to_string()))?;
             if let Some(status) = exited_early {
+                let mut detail = format!("exit_code={}", status.exit_code());
+                if let Some(startup_output) = read_startup_output(&*pair.master, 512) {
+                    detail.push_str(", startup_output=");
+                    detail.push_str(&startup_output);
+                }
                 return Err(PlanterError {
                     code: ErrorCode::Internal,
                     message: "sandboxed pty shell exited during startup".to_string(),
-                    detail: Some(format!("exit_code={}", status.exit_code())),
+                    detail: Some(detail),
                 });
             }
         }
@@ -316,9 +330,18 @@ impl PtyManager {
                 );
                 Ok((shell.to_string(), shell_args))
             }
-            PtySandboxMode::Enforced => {
-                self.sandbox_launch_prefix(session_id, layout, shell, &shell_args)
-            }
+            PtySandboxMode::Enforced => match probe_nested_sandbox_capability()? {
+                NestedSandboxCapability::Available => {
+                    self.sandbox_launch_prefix(session_id, layout, shell, &shell_args)
+                }
+                NestedSandboxCapability::BlockedByParentSandbox => {
+                    tracing::warn!(
+                        session_id = session_id.0,
+                        "nested sandbox-exec unavailable under current confinement; using direct shell launch"
+                    );
+                    Ok((shell.to_string(), shell_args))
+                }
+            },
         }
     }
 
@@ -639,6 +662,82 @@ fn validate_shell_path(shell: &str) -> Result<(), PlanterError> {
     Ok(())
 }
 
+fn probe_nested_sandbox_capability() -> Result<NestedSandboxCapability, PlanterError> {
+    let output = StdCommand::new(SANDBOX_EXEC_PATH)
+        .arg("-p")
+        .arg(NESTED_SANDBOX_PROBE_PROFILE)
+        .arg("/usr/bin/true")
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => Ok(NestedSandboxCapability::Available),
+        Ok(output) => {
+            if is_nested_sandbox_denied_by_parent(output.status.code(), &output.stderr) {
+                return Ok(NestedSandboxCapability::BlockedByParentSandbox);
+            }
+
+            let mut detail = format!("exit_code={}", output.status.code().unwrap_or(-1));
+            if let Some(stderr) = format_output_for_detail(&output.stderr, 256) {
+                detail.push_str(", stderr=");
+                detail.push_str(&stderr);
+            }
+            if let Some(stdout) = format_output_for_detail(&output.stdout, 256) {
+                detail.push_str(", stdout=");
+                detail.push_str(&stdout);
+            }
+
+            Err(PlanterError {
+                code: ErrorCode::Internal,
+                message: "probe nested sandbox support".to_string(),
+                detail: Some(detail),
+            })
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+            Ok(NestedSandboxCapability::BlockedByParentSandbox)
+        }
+        Err(err) => Err(pty_to_error(
+            "probe nested sandbox support",
+            err.to_string(),
+        )),
+    }
+}
+
+fn is_nested_sandbox_denied_by_parent(exit_code: Option<i32>, stderr: &[u8]) -> bool {
+    let stderr = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    (stderr.contains("sandbox_apply") && stderr.contains("operation not permitted"))
+        || (exit_code == Some(71) && stderr.contains("operation not permitted"))
+}
+
+fn format_output_for_detail(output: &[u8], max_chars: usize) -> Option<String> {
+    let compact = String::from_utf8_lossy(output)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if compact.is_empty() {
+        return None;
+    }
+
+    Some(truncate_detail(&compact, max_chars))
+}
+
+fn truncate_detail(value: &str, max_chars: usize) -> String {
+    let mut truncated = value.chars().take(max_chars).collect::<String>();
+    if value.chars().count() > max_chars {
+        truncated.push_str("...");
+    }
+    truncated
+}
+
+fn read_startup_output(master: &(dyn MasterPty + Send), max_chars: usize) -> Option<String> {
+    let mut reader = master.try_clone_reader().ok()?;
+    let mut bytes = Vec::new();
+    if reader.read_to_end(&mut bytes).is_err() {
+        return None;
+    }
+
+    format_output_for_detail(&bytes, max_chars)
+}
+
 fn render_sandbox_profile(
     state_root: &Path,
     session_home: &Path,
@@ -749,5 +848,23 @@ fn not_found_error(message: String) -> PlanterError {
         code: ErrorCode::NotFound,
         message,
         detail: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_nested_sandbox_denied_by_parent;
+
+    #[test]
+    fn detects_nested_sandbox_apply_denial_message() {
+        let stderr = b"sandbox-exec: sandbox_apply: Operation not permitted";
+        assert!(is_nested_sandbox_denied_by_parent(Some(71), stderr));
+        assert!(is_nested_sandbox_denied_by_parent(Some(1), stderr));
+    }
+
+    #[test]
+    fn ignores_unrelated_sandbox_failures() {
+        let stderr = b"sandbox-exec: invalid profile";
+        assert!(!is_nested_sandbox_denied_by_parent(Some(1), stderr));
     }
 }

@@ -1,0 +1,12 @@
+[package]
+name = "planter-execd-proto"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+planter-core = { path = "../planter-core" }
+serde.workspace = true
+
+[dev-dependencies]
+serde_cbor.workspace = true

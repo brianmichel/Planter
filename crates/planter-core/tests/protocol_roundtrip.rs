@@ -112,8 +112,6 @@ fn response_envelope_roundtrip_cbor() {
                         max_log_bytes: None,
                     }),
                 },
-                stdout_path: "/tmp/stdout.log".to_string(),
-                stderr_path: "/tmp/stderr.log".to_string(),
                 started_at_ms: 1,
                 finished_at_ms: None,
                 pid: Some(100),

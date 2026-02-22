@@ -413,6 +413,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "planter-execd"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "planter-core",
+ "planter-execd-proto",
+ "planter-ipc",
+ "portable-pty",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "planter-execd-proto"
+version = "0.1.0"
+dependencies = [
+ "planter-core",
+ "serde",
+ "serde_cbor",
+]
+
+[[package]]
 name = "planter-ipc"
 version = "0.1.0"
 dependencies = [
@@ -453,11 +479,13 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "clap",
+ "libc",
  "planter-core",
+ "planter-execd",
+ "planter-execd-proto",
  "planter-ipc",
  "planter-platform",
  "planter-platform-macos",
- "portable-pty",
  "serde",
  "serde_json",
  "tempfile",
