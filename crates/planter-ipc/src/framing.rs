@@ -2,8 +2,10 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::IpcError;
 
+/// Maximum payload size accepted by framing helpers.
 pub const MAX_FRAME_SIZE: u32 = 8 * 1024 * 1024;
 
+/// Writes one length-prefixed frame to the async writer.
 pub async fn write_frame<W: AsyncWrite + Unpin>(
     writer: &mut W,
     payload: &[u8],
@@ -29,6 +31,7 @@ pub async fn write_frame<W: AsyncWrite + Unpin>(
     Ok(())
 }
 
+/// Reads one length-prefixed frame from the async reader.
 pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<u8>, IpcError> {
     let mut header = [0_u8; 4];
     reader.read_exact(&mut header).await?;

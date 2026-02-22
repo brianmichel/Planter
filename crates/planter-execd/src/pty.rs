@@ -1,3 +1,5 @@
+//! PTY session management with optional nested sandbox execution.
+
 use std::{
     collections::{BTreeMap, HashMap},
     fs,
@@ -15,16 +17,23 @@ use planter_core::{ErrorCode, PlanterError, SessionId};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use tokio::time::sleep;
 
+/// Policy controlling whether PTY shells are nested inside `sandbox-exec`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum PtySandboxMode {
+    /// Never attempt nested sandboxing.
     Disabled,
+    /// Attempt nested sandboxing where possible.
     Permissive,
+    /// Require nested sandboxing unless blocked by parent confinement.
     Enforced,
 }
 
+/// Path to the system sandbox launcher.
 const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
+/// Minimal profile used to probe nested sandbox support.
 const NESTED_SANDBOX_PROBE_PROFILE: &str = "(version 1) (allow default)";
+/// Shared sandbox profile fragments used to build PTY profiles.
 const PROFILE_FRAGMENTS: &[(&str, &str)] = &[
     (
         "00-header",
@@ -44,42 +53,67 @@ const PROFILE_FRAGMENTS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Result of probing whether nested sandboxing can be applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NestedSandboxCapability {
+    /// Nested sandboxing works.
     Available,
+    /// Parent sandbox blocks nested `sandbox-exec`.
     BlockedByParentSandbox,
 }
 
+/// Manages lifecycle and I/O for interactive PTY sessions.
 pub struct PtyManager {
+    /// Root path for session filesystem state.
     state_root: PathBuf,
+    /// Runtime sandbox policy.
     sandbox_mode: PtySandboxMode,
+    /// Active sessions by id.
     sessions: Mutex<HashMap<SessionId, Arc<PtySession>>>,
+    /// Monotonic session id generator.
     next_id: AtomicU64,
 }
 
+/// Result payload for PTY open operations.
 pub struct PtyOpenResult {
+    /// Newly created session id.
     pub session_id: SessionId,
+    /// Child process id when available.
     pub pid: Option<u32>,
 }
 
+/// Result payload for PTY read operations.
 pub struct PtyReadResult {
+    /// Offset used for the read call.
     pub offset: u64,
+    /// Raw output bytes.
     pub data: Vec<u8>,
+    /// True when no more bytes are currently buffered.
     pub eof: bool,
+    /// True when session has fully completed.
     pub complete: bool,
+    /// Exit code when complete.
     pub exit_code: Option<i32>,
 }
 
+/// In-memory state for a single PTY session.
 struct PtySession {
+    /// Writable PTY input stream.
     writer: Mutex<Box<dyn Write + Send>>,
+    /// PTY master handle for control operations.
     master: Mutex<Box<dyn MasterPty + Send>>,
+    /// Child process handle.
     child: Mutex<Box<dyn Child + Send>>,
+    /// Buffered PTY output bytes.
     buffer: Mutex<Vec<u8>>,
+    /// Completion marker for the reader thread.
     complete: AtomicBool,
+    /// Captured process exit code.
     exit_code: Mutex<Option<i32>>,
 }
 
 impl PtyManager {
+    /// Creates an empty PTY manager for the provided state root.
     pub fn new(state_root: PathBuf, sandbox_mode: PtySandboxMode) -> Self {
         Self {
             state_root,
@@ -89,6 +123,7 @@ impl PtyManager {
         }
     }
 
+    /// Opens a new PTY session and spawns the requested shell command.
     pub fn open(
         &self,
         shell: String,
@@ -188,6 +223,7 @@ impl PtyManager {
         Ok(PtyOpenResult { session_id, pid })
     }
 
+    /// Sends raw input bytes to an active session.
     pub fn input(&self, session_id: SessionId, data: Vec<u8>) -> Result<(), PlanterError> {
         if data.is_empty() {
             return Ok(());
@@ -206,6 +242,7 @@ impl PtyManager {
             .map_err(|err| pty_to_error("flush pty input", err.to_string()))
     }
 
+    /// Reads PTY output using offset pagination with optional follow behavior.
     pub async fn read(
         &self,
         session_id: SessionId,
@@ -233,6 +270,7 @@ impl PtyManager {
         }
     }
 
+    /// Resizes the PTY terminal dimensions for an active session.
     pub fn resize(&self, session_id: SessionId, cols: u16, rows: u16) -> Result<(), PlanterError> {
         let session = self.get_session(session_id)?;
         let master = session
@@ -249,6 +287,7 @@ impl PtyManager {
             .map_err(|err| pty_to_error("resize pty", err.to_string()))
     }
 
+    /// Closes a PTY session and terminates its child process.
     pub fn close(&self, session_id: SessionId, force: bool) -> Result<(), PlanterError> {
         let session = self
             .sessions
@@ -274,6 +313,7 @@ impl PtyManager {
         Ok(())
     }
 
+    /// Retrieves a cloned session handle by id.
     fn get_session(&self, session_id: SessionId) -> Result<Arc<PtySession>, PlanterError> {
         self.sessions
             .lock()
@@ -283,6 +323,7 @@ impl PtyManager {
             .ok_or_else(|| not_found_error(format!("session {} does not exist", session_id.0)))
     }
 
+    /// Creates per-session filesystem layout and startup rc files.
     fn prepare_layout(&self, session_id: SessionId) -> Result<SessionLayout, PlanterError> {
         let session_root = self
             .state_root
@@ -314,6 +355,7 @@ impl PtyManager {
         })
     }
 
+    /// Resolves the executable and argument vector used to spawn the PTY shell.
     fn resolve_spawn_command(
         &self,
         session_id: SessionId,
@@ -345,6 +387,7 @@ impl PtyManager {
         }
     }
 
+    /// Builds the `sandbox-exec` command prefix for enforced sandbox launches.
     fn sandbox_launch_prefix(
         &self,
         session_id: SessionId,
@@ -370,6 +413,7 @@ impl PtyManager {
         Ok((SANDBOX_EXEC_PATH.to_string(), args))
     }
 
+    /// Writes the generated sandbox profile for a PTY session.
     fn compile_sandbox_profile(
         &self,
         session_id: SessionId,
@@ -393,6 +437,7 @@ impl PtyManager {
 }
 
 impl PtySession {
+    /// Reads a buffered output chunk and session completion metadata.
     fn read_chunk(&self, offset: u64, max_bytes: usize) -> Result<PtyReadResult, PlanterError> {
         let buffer = self
             .buffer
@@ -420,6 +465,7 @@ impl PtySession {
     }
 }
 
+/// Spawns a background reader that copies PTY output into the session buffer.
 fn spawn_reader_thread(session: Arc<PtySession>, mut reader: Box<dyn Read + Send>) {
     std::thread::spawn(move || {
         let mut buf = [0_u8; 4096];
@@ -443,14 +489,21 @@ fn spawn_reader_thread(session: Arc<PtySession>, mut reader: Box<dyn Read + Send
     });
 }
 
+/// Paths and files prepared for an individual PTY session.
 struct SessionLayout {
+    /// Session-local writable build cell.
     build_cell: PathBuf,
+    /// Root path containing all per-session artifacts.
     session_root: PathBuf,
+    /// Session HOME directory.
     session_home: PathBuf,
+    /// Session temp directory.
     session_tmp: PathBuf,
+    /// Generated bash rc file path.
     bash_rc: PathBuf,
 }
 
+/// Normalizes user-provided shell args and supplies safe defaults when absent.
 fn normalize_shell_args(shell: &str, layout: &SessionLayout, args: Vec<String>) -> Vec<String> {
     if args.is_empty() || (args.len() == 1 && args[0] == "-i") {
         return default_shell_args(shell, layout);
@@ -459,6 +512,7 @@ fn normalize_shell_args(shell: &str, layout: &SessionLayout, args: Vec<String>) 
     args
 }
 
+/// Returns default interactive args tailored to known shells.
 fn default_shell_args(shell: &str, layout: &SessionLayout) -> Vec<String> {
     match shell_name(shell).as_deref() {
         Some("zsh") => vec!["-d".to_string(), "-i".to_string()],
@@ -472,6 +526,7 @@ fn default_shell_args(shell: &str, layout: &SessionLayout) -> Vec<String> {
     }
 }
 
+/// Returns the lowercase shell basename from a shell path.
 fn shell_name(shell: &str) -> Option<String> {
     Path::new(shell)
         .file_name()
@@ -479,6 +534,7 @@ fn shell_name(shell: &str) -> Option<String> {
         .map(|name| name.to_ascii_lowercase())
 }
 
+/// Builds a constrained environment map for PTY shells.
 fn build_isolated_env(
     shell: &str,
     layout: &SessionLayout,
@@ -548,6 +604,7 @@ fn build_isolated_env(
     env
 }
 
+/// Renders the bash startup script used inside PTY sessions.
 fn render_bash_rc(build_cell: &Path) -> String {
     let build_cell = shell_single_quote(build_cell.to_string_lossy().as_ref());
     format!(
@@ -582,6 +639,7 @@ PS1='planter:\w\$ '
     )
 }
 
+/// Renders the zsh startup script used inside PTY sessions.
 fn render_zsh_rc(build_cell: &Path) -> String {
     let build_cell = shell_single_quote(build_cell.to_string_lossy().as_ref());
     format!(
@@ -622,10 +680,12 @@ PROMPT='planter:%~ %# '
     )
 }
 
+/// Escapes a value for safe inclusion in single-quoted shell strings.
 fn shell_single_quote(value: &str) -> String {
     value.replace('\'', r#"'\''"#)
 }
 
+/// Validates that an absolute shell path exists and is executable.
 fn validate_shell_path(shell: &str) -> Result<(), PlanterError> {
     let shell_path = Path::new(shell);
     if !shell_path.is_absolute() {
@@ -662,6 +722,7 @@ fn validate_shell_path(shell: &str) -> Result<(), PlanterError> {
     Ok(())
 }
 
+/// Probes whether nested `sandbox-exec` can run under current confinement.
 fn probe_nested_sandbox_capability() -> Result<NestedSandboxCapability, PlanterError> {
     let output = StdCommand::new(SANDBOX_EXEC_PATH)
         .arg("-p")
@@ -702,12 +763,14 @@ fn probe_nested_sandbox_capability() -> Result<NestedSandboxCapability, PlanterE
     }
 }
 
+/// Detects known stderr patterns for parent sandbox nested-apply denials.
 fn is_nested_sandbox_denied_by_parent(exit_code: Option<i32>, stderr: &[u8]) -> bool {
     let stderr = String::from_utf8_lossy(stderr).to_ascii_lowercase();
     (stderr.contains("sandbox_apply") && stderr.contains("operation not permitted"))
         || (exit_code == Some(71) && stderr.contains("operation not permitted"))
 }
 
+/// Normalizes command output for compact error details.
 fn format_output_for_detail(output: &[u8], max_chars: usize) -> Option<String> {
     let compact = String::from_utf8_lossy(output)
         .split_whitespace()
@@ -720,6 +783,7 @@ fn format_output_for_detail(output: &[u8], max_chars: usize) -> Option<String> {
     Some(truncate_detail(&compact, max_chars))
 }
 
+/// Truncates verbose detail strings to a fixed character limit.
 fn truncate_detail(value: &str, max_chars: usize) -> String {
     let mut truncated = value.chars().take(max_chars).collect::<String>();
     if value.chars().count() > max_chars {
@@ -728,6 +792,7 @@ fn truncate_detail(value: &str, max_chars: usize) -> String {
     truncated
 }
 
+/// Reads startup output from a PTY master for early-exit diagnostics.
 fn read_startup_output(master: &(dyn MasterPty + Send), max_chars: usize) -> Option<String> {
     let mut reader = master.try_clone_reader().ok()?;
     let mut bytes = Vec::new();
@@ -738,6 +803,7 @@ fn read_startup_output(master: &(dyn MasterPty + Send), max_chars: usize) -> Opt
     format_output_for_detail(&bytes, max_chars)
 }
 
+/// Renders the sandbox profile text for one PTY session.
 fn render_sandbox_profile(
     state_root: &Path,
     session_home: &Path,
@@ -827,6 +893,7 @@ fn render_sandbox_profile(
     output
 }
 
+/// Builds a standardized internal PTY error payload.
 fn pty_to_error(action: &str, detail: String) -> PlanterError {
     PlanterError {
         code: ErrorCode::Internal,
@@ -835,6 +902,7 @@ fn pty_to_error(action: &str, detail: String) -> PlanterError {
     }
 }
 
+/// Builds a standardized lock-poisoned error payload.
 fn lock_error(message: &str) -> PlanterError {
     PlanterError {
         code: ErrorCode::Internal,
@@ -843,6 +911,7 @@ fn lock_error(message: &str) -> PlanterError {
     }
 }
 
+/// Builds a standardized not-found error payload.
 fn not_found_error(message: String) -> PlanterError {
     PlanterError {
         code: ErrorCode::NotFound,
@@ -856,6 +925,7 @@ mod tests {
     use super::is_nested_sandbox_denied_by_parent;
 
     #[test]
+    /// Detects known stderr pattern for nested sandbox permission denial.
     fn detects_nested_sandbox_apply_denial_message() {
         let stderr = b"sandbox-exec: sandbox_apply: Operation not permitted";
         assert!(is_nested_sandbox_denied_by_parent(Some(71), stderr));
@@ -863,6 +933,7 @@ mod tests {
     }
 
     #[test]
+    /// Ensures unrelated sandbox failures are not classified as nested denials.
     fn ignores_unrelated_sandbox_failures() {
         let stderr = b"sandbox-exec: invalid profile";
         assert!(!is_nested_sandbox_denied_by_parent(Some(1), stderr));

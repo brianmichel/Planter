@@ -5,6 +5,7 @@ use planter_ipc::{
 use tokio::io::{AsyncWriteExt, duplex, sink};
 
 #[tokio::test]
+/// Verifies one frame can be written and read back unchanged.
 async fn frame_roundtrip() {
     let (mut tx, mut rx) = duplex(128);
     let payload = b"hello-frame".to_vec();
@@ -20,6 +21,7 @@ async fn frame_roundtrip() {
 }
 
 #[tokio::test]
+/// Verifies oversized payloads are rejected before write.
 async fn reject_oversized_frame() {
     let mut writer = sink();
     let payload = vec![0_u8; (MAX_FRAME_SIZE + 1) as usize];
@@ -35,6 +37,7 @@ async fn reject_oversized_frame() {
 }
 
 #[tokio::test]
+/// Verifies truncated payloads surface as EOF I/O errors.
 async fn detect_truncated_frame_payload() {
     let (mut tx, mut rx) = duplex(128);
 

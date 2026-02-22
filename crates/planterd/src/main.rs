@@ -23,22 +23,30 @@ use tracing::info;
 #[cfg(target_os = "macos")]
 use planter_platform_macos::{MacosOps, SandboxMode};
 
+/// CLI arguments for launching the planter daemon.
 #[derive(Debug, Parser)]
 #[command(name = "planterd", about = "Planter daemon")]
 struct Args {
+    /// UNIX socket path for IPC server.
     #[arg(long, default_value = "/tmp/planterd.sock")]
     socket: PathBuf,
+    /// Sandbox mode used by the platform backend.
     #[arg(long, value_enum, default_value_t = SandboxModeArg::Permissive)]
     sandbox_mode: SandboxModeArg,
 }
 
+/// CLI-facing sandbox mode values.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum SandboxModeArg {
+    /// Disable sandbox enforcement.
     Disabled,
+    /// Use sandbox when available and permit graceful fallback.
     Permissive,
+    /// Require sandboxing for job launches.
     Enforced,
 }
 
+/// Entrypoint that maps startup failures to process exit code.
 #[tokio::main]
 async fn main() -> ExitCode {
     match run().await {
@@ -50,6 +58,7 @@ async fn main() -> ExitCode {
     }
 }
 
+/// Initializes daemon runtime state and serves the IPC endpoint.
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt().with_target(false).init();
 
@@ -73,6 +82,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Removes stale socket files while protecting non-socket paths.
 fn prepare_socket_path(path: &Path) -> io::Result<()> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
@@ -91,6 +101,7 @@ fn prepare_socket_path(path: &Path) -> io::Result<()> {
 }
 
 #[cfg(target_os = "macos")]
+/// Selects the macOS platform backend for process and sandbox operations.
 fn select_platform(root: PathBuf, mode: SandboxModeArg) -> Result<Arc<dyn PlatformOps>, io::Error> {
     let sandbox_mode = match mode {
         SandboxModeArg::Disabled => SandboxMode::Disabled,
@@ -101,6 +112,7 @@ fn select_platform(root: PathBuf, mode: SandboxModeArg) -> Result<Arc<dyn Platfo
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Returns unsupported when no backend is compiled for this target OS.
 fn select_platform(
     _root: PathBuf,
     _mode: SandboxModeArg,
@@ -112,6 +124,7 @@ fn select_platform(
 }
 
 impl SandboxModeArg {
+    /// Returns a stable lowercase string for structured logs.
     fn as_str(self) -> &'static str {
         match self {
             SandboxModeArg::Disabled => "disabled",

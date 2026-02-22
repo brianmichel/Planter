@@ -11,11 +11,14 @@ use crate::{
     framing::{read_frame, write_frame},
 };
 
+/// Async request handler used by the IPC server loop.
 #[async_trait]
 pub trait RequestHandler: Send + Sync + 'static {
+    /// Handles one decoded request and returns a response payload.
     async fn handle(&self, req: Request) -> Response;
 }
 
+/// Serves the planter IPC protocol over a UNIX domain socket.
 pub async fn serve_unix(path: &Path, handler: Arc<dyn RequestHandler>) -> Result<(), IpcError> {
     let listener = UnixListener::bind(path)?;
 
@@ -31,6 +34,7 @@ pub async fn serve_unix(path: &Path, handler: Arc<dyn RequestHandler>) -> Result
     }
 }
 
+/// Handles request/response framing for a single accepted connection.
 async fn handle_connection(
     mut stream: UnixStream,
     handler: Arc<dyn RequestHandler>,
@@ -79,11 +83,14 @@ async fn handle_connection(
     }
 }
 
+/// Minimal decode target used to recover `req_id` from malformed requests.
 #[derive(Debug, Deserialize)]
 struct ReqIdOnly {
+    /// Request identifier field from the envelope.
     req_id: ReqId,
 }
 
+/// Extracts a request id from a partially valid request envelope frame.
 fn extract_req_id(frame: &[u8]) -> Option<ReqId> {
     decode::<ReqIdOnly>(frame)
         .ok()

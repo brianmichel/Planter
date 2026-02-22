@@ -19,54 +19,88 @@ use tokio::time::sleep;
 
 use crate::worker_manager::WorkerManager;
 
+/// Persistent daemon state and orchestration entrypoint for jobs/PTYs.
 pub struct StateStore {
+    /// Root state directory.
     root: PathBuf,
+    /// Monotonic id counter used for generated ids.
     id_counter: AtomicU64,
+    /// Platform backend for filesystem/process operations.
     platform: Arc<dyn PlatformOps>,
+    /// Worker lifecycle manager.
     workers: Arc<WorkerManager>,
 }
 
+/// Result payload for log read operations.
 pub struct LogsReadResult {
+    /// Requested offset.
     pub offset: u64,
+    /// Returned log bytes.
     pub data: Vec<u8>,
+    /// True when no more bytes are currently available.
     pub eof: bool,
+    /// True when stream is complete and closed.
     pub complete: bool,
 }
 
+/// Result payload for job kill operations.
 pub struct JobKillResult {
+    /// Updated job metadata.
     pub job: JobInfo,
+    /// Signal name applied to the process.
     pub signal: String,
 }
 
+/// Result payload for PTY open operations.
 pub struct PtyOpenResult {
+    /// Created session id.
     pub session_id: SessionId,
+    /// Spawned shell pid when known.
     pub pid: Option<u32>,
 }
 
+/// Result payload for PTY read operations.
 pub struct PtyReadResult {
+    /// Requested offset.
     pub offset: u64,
+    /// Returned PTY bytes.
     pub data: Vec<u8>,
+    /// True when no more bytes are currently available.
     pub eof: bool,
+    /// True when the PTY has exited and stream is complete.
     pub complete: bool,
+    /// Shell exit code when complete.
     pub exit_code: Option<i32>,
 }
 
+/// Internal persisted job metadata representation on disk.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct StoredJobInfo {
+    /// Job identifier.
     id: JobId,
+    /// Owning cell identifier.
     cell_id: CellId,
+    /// Command specification.
     command: CommandSpec,
+    /// Stdout log file path.
     stdout_path: String,
+    /// Stderr log file path.
     stderr_path: String,
+    /// Job start timestamp.
     started_at_ms: u64,
+    /// Job finish timestamp if complete.
     finished_at_ms: Option<u64>,
+    /// Child process id if known.
     pid: Option<u32>,
+    /// Current exit status.
     status: ExitStatus,
+    /// Optional termination cause.
     #[serde(default)]
     termination_reason: Option<TerminationReason>,
 }
 
 impl StoredJobInfo {
+    /// Converts internal representation to public protocol job info.
     fn to_public(&self) -> JobInfo {
         JobInfo {
             id: self.id.clone(),
@@ -82,6 +116,7 @@ impl StoredJobInfo {
 }
 
 impl StateStore {
+    /// Creates a new state store and ensures required directory layout exists.
     pub fn new(root: PathBuf, platform: Arc<dyn PlatformOps>) -> Result<Self, PlanterError> {
         let store = Self {
             root: root.clone(),
@@ -93,10 +128,12 @@ impl StateStore {
         Ok(store)
     }
 
+    /// Returns the configured root state directory.
     pub fn root(&self) -> &Path {
         &self.root
     }
 
+    /// Creates a new cell and persists its metadata.
     pub fn create_cell(&self, spec: CellSpec) -> Result<CellInfo, PlanterError> {
         if spec.name.trim().is_empty() {
             return Err(PlanterError {
@@ -124,6 +161,7 @@ impl StateStore {
         Ok(info)
     }
 
+    /// Loads a cell metadata file by id.
     pub fn load_cell(&self, cell_id: &CellId) -> Result<CellInfo, PlanterError> {
         let path = self.cell_meta_path(cell_id);
         if !path.exists() {
@@ -137,10 +175,12 @@ impl StateStore {
         read_json(path)
     }
 
+    /// Loads job metadata by id.
     pub fn load_job(&self, job_id: &JobId) -> Result<JobInfo, PlanterError> {
         Ok(self.load_job_record(job_id)?.to_public())
     }
 
+    /// Loads the internal persisted job representation by id.
     fn load_job_record(&self, job_id: &JobId) -> Result<StoredJobInfo, PlanterError> {
         let path = self.job_path(job_id);
         if !path.exists() {
@@ -154,6 +194,7 @@ impl StateStore {
         read_json(path)
     }
 
+    /// Launches a job in a cell through the worker manager and persists metadata.
     pub async fn run_job(
         &self,
         cell_id: CellId,
@@ -215,6 +256,7 @@ impl StateStore {
         Ok(job.to_public())
     }
 
+    /// Signals a running job and updates persisted metadata.
     pub async fn kill_job(
         &self,
         job_id: &JobId,
@@ -262,6 +304,7 @@ impl StateStore {
         })
     }
 
+    /// Removes a cell and optionally force-terminates running jobs.
     pub fn remove_cell(&self, cell_id: &CellId, force: bool) -> Result<(), PlanterError> {
         let cell_meta = self.cell_meta_path(cell_id);
         if !cell_meta.exists() {
@@ -305,6 +348,7 @@ impl StateStore {
         Ok(())
     }
 
+    /// Reads a chunk of job logs with optional follow behavior.
     pub async fn read_logs(
         &self,
         job_id: &JobId,
@@ -368,6 +412,7 @@ impl StateStore {
         }
     }
 
+    /// Opens a new PTY session via the PTY worker channel.
     pub async fn open_pty(
         &self,
         shell: String,
@@ -397,6 +442,7 @@ impl StateStore {
         }
     }
 
+    /// Sends input bytes to an existing PTY session.
     pub async fn pty_input(
         &self,
         session_id: SessionId,
@@ -418,6 +464,7 @@ impl StateStore {
         }
     }
 
+    /// Reads output bytes from an existing PTY session.
     pub async fn pty_read(
         &self,
         session_id: SessionId,
@@ -458,6 +505,7 @@ impl StateStore {
         }
     }
 
+    /// Resizes an existing PTY session.
     pub async fn pty_resize(
         &self,
         session_id: SessionId,
@@ -484,6 +532,7 @@ impl StateStore {
         }
     }
 
+    /// Closes an existing PTY session.
     pub async fn pty_close(&self, session_id: SessionId, force: bool) -> Result<(), PlanterError> {
         let response = self
             .workers
@@ -501,6 +550,7 @@ impl StateStore {
         }
     }
 
+    /// Returns all jobs currently associated with a cell.
     fn jobs_for_cell(&self, cell_id: &CellId) -> Result<Vec<StoredJobInfo>, PlanterError> {
         let mut jobs = Vec::new();
         let entries =
@@ -522,6 +572,7 @@ impl StateStore {
         Ok(jobs)
     }
 
+    /// Ensures required state directories exist.
     fn ensure_layout(&self) -> Result<(), PlanterError> {
         fs::create_dir_all(self.cells_dir())
             .map_err(|err| io_to_error("create cells directory", err))?;
@@ -532,31 +583,38 @@ impl StateStore {
         Ok(())
     }
 
+    /// Returns the next monotonic id value.
     fn next_id(&self) -> u64 {
         self.id_counter.fetch_add(1, Ordering::Relaxed)
     }
 
+    /// Returns the cells directory path.
     fn cells_dir(&self) -> PathBuf {
         self.root.join("cells")
     }
 
+    /// Returns the jobs metadata directory path.
     fn jobs_dir(&self) -> PathBuf {
         self.root.join("jobs")
     }
 
+    /// Returns the logs directory path.
     fn logs_dir(&self) -> PathBuf {
         self.root.join("logs")
     }
 
+    /// Returns the metadata file path for a cell.
     fn cell_meta_path(&self, cell_id: &CellId) -> PathBuf {
         self.cells_dir().join(&cell_id.0).join("cell.json")
     }
 
+    /// Returns the metadata file path for a job.
     fn job_path(&self, job_id: &JobId) -> PathBuf {
         self.jobs_dir().join(format!("{}.json", job_id.0))
     }
 }
 
+/// Reads a slice of bytes from a log file using offset and max byte count.
 fn read_log_chunk(
     path: &Path,
     offset: u64,
@@ -577,6 +635,7 @@ fn read_log_chunk(
     }
 }
 
+/// Serializes a value as pretty JSON to disk.
 fn write_json<T: serde::Serialize>(path: PathBuf, value: &T) -> Result<(), PlanterError> {
     let json = serde_json::to_vec_pretty(value).map_err(|err| PlanterError {
         code: ErrorCode::Internal,
@@ -587,6 +646,7 @@ fn write_json<T: serde::Serialize>(path: PathBuf, value: &T) -> Result<(), Plant
     fs::write(path, json).map_err(|err| io_to_error("write json file", err))
 }
 
+/// Reads and decodes a JSON file into a typed value.
 fn read_json<T: serde::de::DeserializeOwned>(path: PathBuf) -> Result<T, PlanterError> {
     let bytes = fs::read(path).map_err(|err| io_to_error("read json file", err))?;
     serde_json::from_slice(&bytes).map_err(|err| PlanterError {
@@ -596,6 +656,7 @@ fn read_json<T: serde::de::DeserializeOwned>(path: PathBuf) -> Result<T, Planter
     })
 }
 
+/// Converts plain I/O errors to standardized planter errors.
 fn io_to_error(action: &str, err: io::Error) -> PlanterError {
     PlanterError {
         code: ErrorCode::Internal,
@@ -604,6 +665,7 @@ fn io_to_error(action: &str, err: io::Error) -> PlanterError {
     }
 }
 
+/// Maps platform backend errors into daemon protocol errors.
 fn platform_to_planter_error(err: PlatformError) -> PlanterError {
     match err {
         PlatformError::Io(io_err) => io_to_error("platform io", io_err),
@@ -620,10 +682,12 @@ fn platform_to_planter_error(err: PlatformError) -> PlanterError {
     }
 }
 
+/// Returns the dedicated logical cell id used for PTY worker calls.
 fn default_pty_cell_id() -> CellId {
     CellId("cell-pty-default".to_string())
 }
 
+/// Builds a standardized error for unexpected worker response variants.
 fn unexpected_worker_response(action: &str, response: ExecResponse) -> PlanterError {
     PlanterError {
         code: ErrorCode::Internal,

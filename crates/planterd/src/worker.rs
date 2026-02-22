@@ -11,12 +11,16 @@ use planter_ipc::{
 };
 use tokio::net::UnixStream;
 
+/// Thin RPC client used by `planterd` to talk to one worker process.
 pub struct WorkerClient {
+    /// Worker control socket stream.
     stream: UnixStream,
+    /// Monotonic request id generator.
     next_req_id: u64,
 }
 
 impl WorkerClient {
+    /// Creates a worker client over an established unix stream.
     pub fn new(stream: UnixStream) -> Self {
         Self {
             stream,
@@ -24,6 +28,7 @@ impl WorkerClient {
         }
     }
 
+    /// Performs protocol/auth handshake with the worker.
     pub async fn hello(&mut self, auth_token: String, cell_id: String) -> Result<(), PlanterError> {
         let response = self
             .call(ExecRequest::Hello {
@@ -48,6 +53,7 @@ impl WorkerClient {
         }
     }
 
+    /// Performs a worker liveness probe.
     pub async fn ping(&mut self) -> Result<(), PlanterError> {
         let response = self.call(ExecRequest::Ping {}).await?;
         match response {
@@ -60,6 +66,7 @@ impl WorkerClient {
         }
     }
 
+    /// Sends one worker request and returns decoded response payload.
     pub async fn call(&mut self, request: ExecRequest) -> Result<ExecResponse, PlanterError> {
         let req_id = self.next_req_id;
         self.next_req_id = self.next_req_id.saturating_add(1);
@@ -98,6 +105,7 @@ impl WorkerClient {
 }
 
 #[allow(dead_code)]
+/// Creates a nonblocking unix stream pair for worker control RPC.
 pub fn make_socket_pair() -> Result<(UnixStream, UnixStream), PlanterError> {
     let (left, right) = std::os::unix::net::UnixStream::pair().map_err(|err| PlanterError {
         code: ErrorCode::Internal,
@@ -131,6 +139,7 @@ pub fn make_socket_pair() -> Result<(UnixStream, UnixStream), PlanterError> {
 }
 
 #[allow(dead_code)]
+/// Generates a per-process auth token for worker handshake.
 pub fn new_auth_token() -> String {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -139,6 +148,7 @@ pub fn new_auth_token() -> String {
     format!("wkr-{}-{ts}", std::process::id())
 }
 
+/// Maps worker-specific error codes to daemon-level error categories.
 fn map_exec_error(code: ExecErrorCode) -> ErrorCode {
     match code {
         ExecErrorCode::InvalidRequest => ErrorCode::InvalidRequest,
@@ -150,6 +160,7 @@ fn map_exec_error(code: ExecErrorCode) -> ErrorCode {
     }
 }
 
+/// Converts IPC transport errors to standardized planter errors.
 fn to_ipc_error(err: planter_ipc::IpcError) -> PlanterError {
     PlanterError {
         code: ErrorCode::Internal,
@@ -170,6 +181,7 @@ mod tests {
         framing::{read_frame, write_frame},
     };
 
+    /// Minimal fake worker server used for client roundtrip tests.
     async fn fake_server(mut stream: tokio::net::UnixStream) {
         loop {
             let frame = match read_frame(&mut stream).await {
@@ -207,6 +219,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// Verifies hello and ping request/response flow through [`WorkerClient`].
     async fn hello_and_ping_roundtrip() {
         let (client_stream, server_stream) = make_socket_pair().expect("socket pair");
         let server = tokio::spawn(async move {
@@ -224,6 +237,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies unavailable-style exec errors map to daemon unavailable errors.
     fn map_exec_error_unavailable() {
         assert_eq!(
             map_exec_error(ExecErrorCode::Unavailable),

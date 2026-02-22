@@ -4,16 +4,20 @@ use planter_core::{PROTOCOL_VERSION, PlanterError, PtyAction, Request, Response}
 
 use crate::state::StateStore;
 
+/// Request handler that maps protocol messages to state-store operations.
 #[derive(Clone)]
 pub struct Handler {
+    /// Shared mutable daemon state.
     state: Arc<StateStore>,
 }
 
 impl Handler {
+    /// Creates a handler from a shared state store.
     pub fn new(state: Arc<StateStore>) -> Self {
         Self { state }
     }
 
+    /// Executes one protocol request and returns a protocol response.
     pub async fn handle(&self, request: Request) -> Response {
         let result = match request {
             Request::Version {} => Ok(Response::Version {
@@ -139,6 +143,7 @@ impl Handler {
     }
 }
 
+/// Converts internal errors into protocol error responses.
 fn to_error_response(err: PlanterError) -> Response {
     Response::Error {
         code: err.code,
@@ -159,6 +164,7 @@ mod tests {
 
     use crate::state::StateStore;
 
+    /// Constructs a handler backed by a temporary local state store.
     fn test_handler(state_root: std::path::PathBuf) -> Handler {
         let platform = Arc::new(MacosOps::new(state_root.clone(), SandboxMode::Disabled));
         let state =
@@ -167,6 +173,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// Exercises create/run/logs/status/kill/remove lifecycle through handler API.
     async fn lifecycle_and_logs_flow() {
         let tmp = tempdir().expect("tempdir");
         let state_root = tmp.path().join("state");
@@ -264,6 +271,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// Ensures removing a cell with active jobs requires `force=true`.
     async fn remove_cell_without_force_fails_when_job_running() {
         let tmp = tempdir().expect("tempdir");
         let state_root = tmp.path().join("state");

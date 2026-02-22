@@ -6,6 +6,7 @@ use planter_core::{
 };
 
 #[test]
+/// Verifies representative request envelopes roundtrip through CBOR encoding.
 fn request_envelope_roundtrip_cbor() {
     let input = RequestEnvelope {
         req_id: ReqId(42),
@@ -66,6 +67,7 @@ fn request_envelope_roundtrip_cbor() {
 }
 
 #[test]
+/// Verifies representative response envelopes roundtrip through CBOR encoding.
 fn response_envelope_roundtrip_cbor() {
     let version = ResponseEnvelope {
         req_id: ReqId(1),

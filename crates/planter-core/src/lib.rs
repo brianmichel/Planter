@@ -1,3 +1,5 @@
+//! Shared core protocol types and helpers used by all planter binaries.
+
 pub mod errors;
 pub mod ids;
 pub mod paths;

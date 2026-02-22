@@ -11,6 +11,7 @@ use planter_core::{CellId, CommandSpec, JobId, JobInfo};
 use planter_platform::{CellPaths, JobHandle, JobUsage, PlatformError, PlatformOps};
 use tokio::process::{Child, Command};
 
+/// Ordered sandbox profile fragments merged into a generated profile file.
 const PROFILE_FRAGMENTS: &[(&str, &str)] = &[
     ("00-header", include_str!("../profiles/00-header.sb")),
     ("10-process", include_str!("../profiles/10-process.sb")),
@@ -21,42 +22,56 @@ const PROFILE_FRAGMENTS: &[(&str, &str)] = &[
     ("30-network", include_str!("../profiles/30-network.sb")),
 ];
 
+/// System path for the macOS sandbox runner.
 const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
 
+/// Sandboxing policy to apply for launched jobs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxMode {
+    /// Launch without sandbox restrictions.
     Disabled,
+    /// Attempt sandboxing and fall back to unsandboxed execution on failure.
     Permissive,
+    /// Require sandboxing; fail if sandbox launch cannot be applied.
     Enforced,
 }
 
+/// macOS implementation of [`PlatformOps`].
 #[derive(Debug, Clone)]
 pub struct MacosOps {
+    /// Root state directory containing cells/logs/job metadata.
     root: PathBuf,
+    /// Runtime sandbox mode.
     sandbox_mode: SandboxMode,
 }
 
 impl MacosOps {
+    /// Creates a new macOS platform backend for a state root.
     pub fn new(root: PathBuf, sandbox_mode: SandboxMode) -> Self {
         Self { root, sandbox_mode }
     }
 
+    /// Returns the root directory containing all cell workspaces.
     fn cells_dir(&self) -> PathBuf {
         self.root.join("cells")
     }
 
+    /// Returns the directory containing stdout/stderr logs.
     fn logs_dir(&self) -> PathBuf {
         self.root.join("logs")
     }
 
+    /// Returns the directory containing persisted job metadata.
     fn jobs_dir(&self) -> PathBuf {
         self.root.join("jobs")
     }
 
+    /// Returns the directory containing generated sandbox profiles.
     fn sandbox_dir(&self) -> PathBuf {
         self.root.join("sandbox")
     }
 
+    /// Renders and writes a sandbox profile file for a cell.
     pub fn compile_sandbox_profile(&self, cell_id: &CellId) -> Result<PathBuf, PlatformError> {
         let sandbox_dir = self.sandbox_dir();
         fs::create_dir_all(&sandbox_dir)?;
@@ -69,6 +84,7 @@ impl MacosOps {
         Ok(profile_path)
     }
 
+    /// Renders the final sandbox profile by applying placeholder substitutions.
     fn render_sandbox_profile(&self, cell_id: &CellId, cell_dir: &Path) -> String {
         let mut output = String::new();
         let state_root = self.root.to_string_lossy().to_string();
@@ -101,6 +117,7 @@ impl MacosOps {
         output
     }
 
+    /// Resolves the active local user used for lease metadata.
     pub fn lease_user(&self) -> Result<String, PlatformError> {
         if let Some(user) = std::env::var_os("USER") {
             let value = user.to_string_lossy().trim().to_string();
@@ -126,10 +143,12 @@ impl MacosOps {
         Ok(user)
     }
 
+    /// Returns whether `sandbox-exec` is available on the current host.
     fn sandbox_exec_available(&self) -> bool {
         Path::new(SANDBOX_EXEC_PATH).exists()
     }
 
+    /// Spawns a process directly without sandboxing.
     fn spawn_plain(
         &self,
         cmd: &CommandSpec,
@@ -150,6 +169,7 @@ impl MacosOps {
         command.spawn().map_err(PlatformError::from)
     }
 
+    /// Spawns a process under `sandbox-exec` with a prebuilt profile.
     fn spawn_sandboxed(
         &self,
         cmd: &CommandSpec,
@@ -178,6 +198,7 @@ impl MacosOps {
         command.spawn().map_err(PlatformError::from)
     }
 
+    /// Ensures the target cell directory exists before launching work.
     fn ensure_cell_exists(&self, cell_id: &CellId) -> Result<PathBuf, PlatformError> {
         let cell_dir = self.cells_dir().join(&cell_id.0);
         if !cell_dir.exists() {
@@ -189,12 +210,14 @@ impl MacosOps {
         Ok(cell_dir)
     }
 
+    /// Ensures the log directory exists and returns its path.
     fn ensure_logs_dir(&self) -> Result<PathBuf, PlatformError> {
         let logs_dir = self.logs_dir();
         fs::create_dir_all(&logs_dir)?;
         Ok(logs_dir)
     }
 
+    /// Opens stdout/stderr files, optionally appending existing content.
     fn open_log_files(
         &self,
         stdout_path: &Path,
@@ -214,10 +237,12 @@ impl MacosOps {
         Ok((stdout, stderr))
     }
 
+    /// Returns the path to persisted job metadata.
     fn job_meta_path(&self, job_id: &JobId) -> PathBuf {
         self.jobs_dir().join(format!("{}.json", job_id.0))
     }
 
+    /// Loads persisted job metadata from disk.
     fn load_job(&self, job_id: &JobId) -> Result<JobInfo, PlatformError> {
         let path = self.job_meta_path(job_id);
         let bytes = fs::read(&path)?;
@@ -229,6 +254,7 @@ impl MacosOps {
         })
     }
 
+    /// Sends one signal to a pid via `/bin/kill`.
     fn signal_pid(&self, pid: u32, signal: &str) -> Result<(), PlatformError> {
         let status = StdCommand::new("/bin/kill")
             .arg(format!("-{signal}"))
@@ -244,6 +270,7 @@ impl MacosOps {
         ))))
     }
 
+    /// Sends one signal to direct children via `pkill -P`.
     fn signal_children(&self, pid: u32, signal: &str) -> Result<(), PlatformError> {
         let status = StdCommand::new("/usr/bin/pkill")
             .arg(format!("-{signal}"))
@@ -260,6 +287,7 @@ impl MacosOps {
         ))))
     }
 
+    /// Returns whether a pid is currently alive.
     fn process_alive(&self, pid: u32) -> Result<bool, PlatformError> {
         let status = StdCommand::new("/bin/kill")
             .arg("-0")
@@ -270,12 +298,14 @@ impl MacosOps {
 }
 
 impl PlatformOps for MacosOps {
+    /// Creates cell directories under the state root.
     fn create_cell_dirs(&self, cell_id: &CellId) -> Result<CellPaths, PlatformError> {
         let cell_dir = self.cells_dir().join(&cell_id.0);
         fs::create_dir_all(&cell_dir)?;
         Ok(CellPaths { cell_dir })
     }
 
+    /// Spawns a job with optional sandbox enforcement and log wiring.
     fn spawn_job(
         &self,
         job_id: &JobId,
@@ -365,6 +395,7 @@ impl PlatformOps for MacosOps {
         })
     }
 
+    /// Stops a job process tree gracefully, then forcefully if needed.
     fn kill_job_tree(&self, job_id: &JobId, force: bool) -> Result<(), PlatformError> {
         let job = self.load_job(job_id)?;
         let Some(pid) = job.pid else {
@@ -390,6 +421,7 @@ impl PlatformOps for MacosOps {
         Ok(())
     }
 
+    /// Samples RSS usage via `ps`; CPU is currently unavailable on this backend.
     fn probe_usage(&self, job_id: &JobId) -> Result<Option<JobUsage>, PlatformError> {
         let job = self.load_job(job_id)?;
         let Some(pid) = job.pid else {
@@ -431,6 +463,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    /// Verifies sandbox profile placeholders are resolved into concrete paths.
     fn sandbox_profile_renders_fragment_placeholders() {
         let ops = MacosOps::new(
             PathBuf::from("/tmp/planter-test-state"),
@@ -447,6 +480,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// Verifies enforced sandbox permits writes under the configured state root.
     async fn enforced_sandbox_allows_write_under_state_root() {
         if !Path::new(SANDBOX_EXEC_PATH).exists() {
             return;
@@ -490,6 +524,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// Verifies enforced sandbox blocks writes outside the configured state root.
     async fn enforced_sandbox_blocks_write_outside_state_root() {
         if !Path::new(SANDBOX_EXEC_PATH).exists() {
             return;

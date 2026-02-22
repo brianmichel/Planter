@@ -6,10 +6,12 @@ use planter_ipc::{PlanterClient, RequestHandler, serve_unix};
 use tempfile::tempdir;
 use tokio::time::{Duration, sleep};
 
+/// Minimal request handler used for integration-level client/server roundtrip tests.
 struct TestHandler;
 
 #[async_trait]
 impl RequestHandler for TestHandler {
+    /// Returns canned responses for selected request variants.
     async fn handle(&self, req: Request) -> Response {
         match req {
             Request::Version {} => Response::Version {
@@ -39,6 +41,7 @@ impl RequestHandler for TestHandler {
 }
 
 #[tokio::test]
+/// Verifies client calls roundtrip against a live unix-socket server.
 async fn client_server_version_and_health_roundtrip() {
     let tmp = tempdir().expect("tempdir should be created");
     let socket_path = tmp.path().join("planterd.sock");

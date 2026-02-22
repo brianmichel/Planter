@@ -19,153 +19,230 @@ use tokio::{
     task::JoinError,
 };
 
+/// Root CLI arguments for the planter client binary.
 #[derive(Debug, Parser)]
 #[command(name = "planter", about = "Planter CLI")]
 struct Cli {
+    /// Path to daemon unix socket.
     #[arg(long, default_value = "/tmp/planterd.sock")]
     socket: PathBuf,
+    /// Selected top-level command.
     #[command(subcommand)]
     command: Command,
 }
 
+/// Top-level CLI command variants.
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Prints daemon and protocol versions.
     Version,
+    /// Prints daemon health status.
     Health,
+    /// Creates a new cell.
     Create {
+        /// Friendly cell name.
         #[arg(long)]
         name: String,
+        /// Repeated `KEY=VALUE` env values.
         #[arg(long = "env", value_name = "KEY=VALUE")]
         env: Vec<String>,
     },
+    /// Runs a command in a cell.
     Run {
+        /// Target cell id.
         cell_id: String,
+        /// Optional working directory.
         #[arg(long)]
         cwd: Option<String>,
+        /// Repeated `KEY=VALUE` env overrides.
         #[arg(long = "env", value_name = "KEY=VALUE")]
         env: Vec<String>,
+        /// Command argv.
         #[arg(last = true, required = true, num_args = 1..)]
         argv: Vec<String>,
     },
+    /// Streams job logs.
     Logs {
+        /// Target job id.
         job_id: String,
+        /// Follow log output.
         #[arg(short = 'f', long)]
         follow: bool,
+        /// Read stderr instead of stdout.
         #[arg(long)]
         stderr: bool,
+        /// Maximum bytes per read.
         #[arg(long, default_value_t = 65536)]
         max_bytes: u32,
+        /// Follow wait timeout in milliseconds.
         #[arg(long, default_value_t = 1000)]
         wait_ms: u64,
     },
+    /// Nested job commands.
     Job {
+        /// Job subcommand.
         #[command(subcommand)]
         command: JobCommand,
     },
+    /// Nested cell commands.
     Cell {
+        /// Cell subcommand.
         #[command(subcommand)]
         command: CellCommand,
     },
+    /// Nested interactive session commands.
     Session {
+        /// Session subcommand.
         #[command(subcommand)]
         command: SessionCommand,
     },
 }
 
+/// Subcommands for existing jobs.
 #[derive(Debug, Subcommand)]
 enum JobCommand {
+    /// Prints current job status.
     Status {
+        /// Target job id.
         job_id: String,
     },
+    /// Terminates a running job.
     Kill {
+        /// Target job id.
         job_id: String,
+        /// Force kill instead of graceful terminate.
         #[arg(long)]
         force: bool,
     },
 }
 
+/// Subcommands for cells.
 #[derive(Debug, Subcommand)]
 enum CellCommand {
+    /// Removes a cell.
     Rm {
+        /// Target cell id.
         cell_id: String,
+        /// Force removal even if jobs are active.
         #[arg(long)]
         force: bool,
     },
 }
 
+/// Subcommands for interactive PTY sessions.
 #[derive(Debug, Subcommand)]
 enum SessionCommand {
+    /// Opens a new PTY session.
     Open {
+        /// Shell executable.
         #[arg(long, default_value = "/bin/zsh")]
         shell: String,
+        /// Optional working directory.
         #[arg(long)]
         cwd: Option<String>,
+        /// Repeated `KEY=VALUE` env overrides.
         #[arg(long = "env", value_name = "KEY=VALUE")]
         env: Vec<String>,
+        /// Initial terminal columns.
         #[arg(long, default_value_t = 120)]
         cols: u16,
+        /// Initial terminal rows.
         #[arg(long, default_value_t = 40)]
         rows: u16,
+        /// Additional shell args.
         #[arg(last = true)]
         args: Vec<String>,
     },
+    /// Reads PTY output.
     Read {
+        /// Session id.
         session_id: u64,
+        /// Read offset.
         #[arg(long, default_value_t = 0)]
         offset: u64,
+        /// Maximum bytes per read.
         #[arg(long, default_value_t = 65536)]
         max_bytes: u32,
+        /// Follow output.
         #[arg(short = 'f', long)]
         follow: bool,
+        /// Follow wait timeout in milliseconds.
         #[arg(long, default_value_t = 250)]
         wait_ms: u64,
     },
+    /// Writes a string to PTY input.
     Write {
+        /// Session id.
         session_id: u64,
+        /// Input text payload.
         data: String,
     },
+    /// Resizes an existing PTY session.
     Resize {
+        /// Session id.
         session_id: u64,
+        /// Terminal columns.
         cols: u16,
+        /// Terminal rows.
         rows: u16,
     },
+    /// Closes an existing PTY session.
     Close {
+        /// Session id.
         session_id: u64,
+        /// Force close.
         #[arg(long)]
         force: bool,
     },
+    /// Attaches local terminal I/O to a PTY session.
     Attach {
+        /// Session id.
         session_id: u64,
+        /// Terminal columns.
         #[arg(long, default_value_t = 120)]
         cols: u16,
+        /// Terminal rows.
         #[arg(long, default_value_t = 40)]
         rows: u16,
     },
 }
 
+/// Errors surfaced by CLI command execution.
 #[derive(Debug, Error)]
 enum CliError {
+    /// IPC transport failure.
     #[error(transparent)]
     Ipc(#[from] planter_ipc::IpcError),
+    /// Local I/O failure.
     #[error("io error: {0}")]
     Io(#[from] io::Error),
+    /// Async task failed to join.
     #[error("task join error: {0}")]
     Join(#[from] JoinError),
+    /// Daemon returned an explicit error response.
     #[error("daemon error [{code:?}]: {message}{detail}")]
     Daemon {
+        /// Daemon error category.
         code: ErrorCode,
+        /// Error summary.
         message: String,
+        /// Optional formatted detail string.
         detail: String,
     },
+    /// Env flag failed `KEY=VALUE` parsing.
     #[error("invalid env var '{value}': expected KEY=VALUE")]
     InvalidEnv { value: String },
+    /// Response variant did not match the command expectation.
     #[error("unexpected response for {command}: {response:?}")]
     Unexpected {
+        /// Command label used in error message.
         command: &'static str,
+        /// Raw unexpected response payload.
         response: Box<Response>,
     },
 }
 
+/// Entrypoint that maps CLI errors to process exit code.
 #[tokio::main]
 async fn main() -> ExitCode {
     match run().await {
@@ -177,6 +254,7 @@ async fn main() -> ExitCode {
     }
 }
 
+/// Parses CLI args, executes selected command, and prints command output.
 async fn run() -> Result<(), CliError> {
     let cli = Cli::parse();
     let mut client = PlanterClient::connect(&cli.socket).await?;
@@ -557,6 +635,7 @@ async fn run() -> Result<(), CliError> {
     }
 }
 
+/// Streams log chunks until completion (or once when not following).
 async fn stream_logs(
     client: &mut PlanterClient,
     job_id: &JobId,
@@ -618,6 +697,7 @@ async fn stream_logs(
     }
 }
 
+/// Streams PTY chunks until completion (or once when not following).
 async fn stream_pty(
     client: &mut PlanterClient,
     session_id: SessionId,
@@ -676,6 +756,7 @@ async fn stream_pty(
     }
 }
 
+/// Attaches local stdin/stdout to a remote PTY session.
 async fn attach_session(
     socket: &PathBuf,
     session_id: SessionId,
@@ -868,6 +949,7 @@ async fn attach_session(
     Ok(())
 }
 
+/// Prints the CLI attach banner.
 fn print_planter_banner() -> Result<(), CliError> {
     const BANNER: &str = r#"
    .-.
@@ -887,6 +969,7 @@ fn print_planter_banner() -> Result<(), CliError> {
     Ok(())
 }
 
+/// Parses repeated `KEY=VALUE` pairs into a map.
 fn parse_env_pairs(pairs: Vec<String>) -> Result<BTreeMap<String, String>, CliError> {
     let mut env = BTreeMap::new();
 
@@ -907,18 +990,23 @@ fn parse_env_pairs(pairs: Vec<String>) -> Result<BTreeMap<String, String>, CliEr
     Ok(env)
 }
 
+/// Formats optional daemon detail strings for CLI errors.
 fn format_detail(detail: Option<String>) -> String {
     detail
         .map(|value| format!(" ({value})"))
         .unwrap_or_default()
 }
 
+/// RAII guard that switches terminal mode to raw and restores on drop.
 struct TerminalModeGuard {
+    /// TTY file descriptor.
     fd: i32,
+    /// Saved terminal settings for restoration.
     original: Option<libc::termios>,
 }
 
 impl TerminalModeGuard {
+    /// Puts stdin TTY into raw mode and captures previous settings.
     fn enter_raw() -> Result<Self, CliError> {
         let fd = io::stdin().as_raw_fd();
 
@@ -954,6 +1042,7 @@ impl TerminalModeGuard {
 }
 
 impl Drop for TerminalModeGuard {
+    /// Restores terminal settings when the guard leaves scope.
     fn drop(&mut self) {
         if let Some(original) = self.original {
             // SAFETY: fd and saved termios came from a successful tcgetattr call.

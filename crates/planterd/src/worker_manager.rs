@@ -21,30 +21,47 @@ use tokio::{
 
 use crate::worker::{WorkerClient, new_auth_token};
 
+/// Default path used when no explicit worker binary override is provided.
 const DEFAULT_WORKER_BIN: &str = "target/debug/planter-execd";
+/// Maximum handshake wait before considering worker startup failed.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(2_000);
+/// Per-cell async mutex used to serialize calls into a worker.
 type CallLock = Arc<AsyncMutex<()>>;
+/// Mapping from cell id to call lock.
 type CallLockMap = HashMap<String, CallLock>;
 
+/// Lifecycle manager for `planter-execd` worker processes.
 pub struct WorkerManager {
+    /// Worker executable path.
     worker_bin: PathBuf,
+    /// Root state directory passed to workers.
     state_root: PathBuf,
+    /// Active workers keyed by cell id.
     workers: Mutex<HashMap<String, WorkerHandle>>,
+    /// Per-cell request serialization locks.
     call_locks: Mutex<CallLockMap>,
 }
 
+/// In-memory handle for one active worker.
 struct WorkerHandle {
+    /// RPC client to the worker control socket.
     client: WorkerClient,
+    /// Runtime ownership for process or in-process task.
     runtime: WorkerRuntime,
+    /// Last successful request timestamp in milliseconds.
     last_used_ms: u64,
 }
 
+/// Worker execution model used by the manager.
 enum WorkerRuntime {
+    /// Dedicated OS process.
     Process(Child),
+    /// In-process tokio task used when binary is unavailable.
     InProcess(JoinHandle<Result<(), planter_execd::WorkerError>>),
 }
 
 impl WorkerHandle {
+    /// Attempts graceful worker shutdown, then forcefully tears down runtime.
     async fn terminate(&mut self) {
         let _ = self
             .client
@@ -62,6 +79,7 @@ impl WorkerHandle {
 }
 
 impl WorkerManager {
+    /// Creates a worker manager using environment/default worker binary path.
     pub fn new(state_root: PathBuf) -> Self {
         Self {
             worker_bin: std::env::var("PLANTER_EXECD_BIN")
@@ -73,6 +91,7 @@ impl WorkerManager {
         }
     }
 
+    /// Creates a worker manager with an explicit worker binary path.
     pub fn with_worker_bin(state_root: PathBuf, worker_bin: PathBuf) -> Self {
         Self {
             worker_bin,
@@ -82,6 +101,7 @@ impl WorkerManager {
         }
     }
 
+    /// Sends one request to the worker for the given cell, spawning as needed.
     pub async fn call(
         &self,
         cell_id: &CellId,
@@ -117,6 +137,7 @@ impl WorkerManager {
         }
     }
 
+    /// Stops and forgets the worker associated with a cell id.
     pub fn stop_worker(&self, cell_id: &CellId, _force: bool) -> Result<(), PlanterError> {
         let key = cell_id.0.clone();
         let Some(mut handle) = self.take_worker(&key)? else {
@@ -133,6 +154,7 @@ impl WorkerManager {
         Ok(())
     }
 
+    /// Spawns or boots a worker runtime and completes hello handshake.
     async fn spawn_worker(&self, cell_id: &CellId) -> Result<WorkerHandle, PlanterError> {
         let (parent_std, child_std) =
             std::os::unix::net::UnixStream::pair().map_err(|err| PlanterError {
@@ -237,15 +259,18 @@ impl WorkerManager {
         }
     }
 
+    /// Removes and returns a cached worker handle for a key.
     fn take_worker(&self, key: &str) -> Result<Option<WorkerHandle>, PlanterError> {
         Ok(self.workers_lock()?.remove(key))
     }
 
+    /// Stores a worker handle for a key.
     fn put_worker(&self, key: String, worker: WorkerHandle) -> Result<(), PlanterError> {
         self.workers_lock()?.insert(key, worker);
         Ok(())
     }
 
+    /// Acquires the worker map lock and converts poisoning to planter errors.
     fn workers_lock(&self) -> Result<MutexGuard<'_, HashMap<String, WorkerHandle>>, PlanterError> {
         self.workers.lock().map_err(|_| PlanterError {
             code: ErrorCode::Internal,
@@ -254,6 +279,7 @@ impl WorkerManager {
         })
     }
 
+    /// Returns the per-cell call lock, creating one if absent.
     fn get_call_lock(&self, key: &str) -> Result<CallLock, PlanterError> {
         let mut locks = self.call_locks_lock()?;
         if let Some(lock) = locks.get(key) {
@@ -264,6 +290,7 @@ impl WorkerManager {
         Ok(lock)
     }
 
+    /// Acquires the call-lock map and converts poisoning to planter errors.
     fn call_locks_lock(&self) -> Result<MutexGuard<'_, CallLockMap>, PlanterError> {
         self.call_locks.lock().map_err(|_| PlanterError {
             code: ErrorCode::Internal,
@@ -273,6 +300,7 @@ impl WorkerManager {
     }
 }
 
+/// Selects in-process worker mode based on env override or binary presence.
 fn use_inprocess_worker(worker_bin: &std::path::Path) -> bool {
     match std::env::var("PLANTER_EXECD_INPROC") {
         Ok(value) => matches!(
@@ -283,6 +311,7 @@ fn use_inprocess_worker(worker_bin: &std::path::Path) -> bool {
     }
 }
 
+/// Clears `FD_CLOEXEC` for an inherited fd passed to the worker process.
 fn clear_close_on_exec(fd: i32) -> Result<(), PlanterError> {
     // SAFETY: fcntl is called with valid command constants and the provided fd.
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };

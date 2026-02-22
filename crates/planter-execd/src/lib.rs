@@ -1,3 +1,5 @@
+//! Sandboxed worker runtime used by `planterd` for job and PTY execution.
+
 mod pty;
 
 use std::{
@@ -24,35 +26,52 @@ use tokio::{net::UnixStream, process::Child, process::Command, time::sleep};
 
 use crate::pty::{PtyManager, PtySandboxMode};
 
+/// Startup configuration injected by the parent daemon.
 #[derive(Debug, Clone)]
 pub struct WorkerConfig {
+    /// Logical cell id this worker serves.
     pub cell_id: String,
+    /// Shared auth token required during hello handshake.
     pub auth_token: String,
+    /// Root state directory for worker-managed artifacts.
     pub state_root: std::path::PathBuf,
 }
 
+/// Fatal errors that stop the worker control loop.
 #[derive(Debug, Error)]
 pub enum WorkerError {
+    /// Framing/codec/socket failure on control channel.
     #[error(transparent)]
     Ipc(#[from] IpcError),
+    /// Provided control fd was invalid.
     #[error("invalid control socket fd {fd}: {source}")]
     InvalidControlFd { fd: RawFd, source: std::io::Error },
+    /// Failed converting std unix stream into tokio stream.
     #[error("failed to convert worker control stream: {0}")]
     ControlStream(std::io::Error),
 }
 
+/// Mutable in-memory runtime state for the worker process.
 struct WorkerRuntime {
+    /// Active jobs by id.
     jobs: HashMap<JobId, WorkerJob>,
+    /// PTY session manager.
     pty: PtyManager,
 }
 
+/// Mutable state tracked for one launched job.
 struct WorkerJob {
+    /// Child process handle.
     child: Child,
+    /// Current running/exited status.
     status: ExitStatus,
+    /// Completion timestamp if finished.
     finished_at_ms: Option<u64>,
+    /// Optional reason captured when process is terminated.
     termination_reason: Option<TerminationReason>,
 }
 
+/// Converts an inherited fd into a nonblocking tokio unix stream.
 pub fn control_stream_from_fd(fd: RawFd) -> Result<UnixStream, WorkerError> {
     if fd < 0 {
         return Err(WorkerError::InvalidControlFd {
@@ -68,6 +87,7 @@ pub fn control_stream_from_fd(fd: RawFd) -> Result<UnixStream, WorkerError> {
     UnixStream::from_std(std_stream).map_err(WorkerError::ControlStream)
 }
 
+/// Serves the worker request loop on an authenticated control stream.
 pub async fn serve_control_stream(
     mut stream: UnixStream,
     config: WorkerConfig,
@@ -138,6 +158,7 @@ pub async fn serve_control_stream(
 }
 
 impl WorkerRuntime {
+    /// Creates an empty runtime and PTY manager for the worker.
     fn new(state_root: std::path::PathBuf) -> Self {
         Self {
             jobs: HashMap::new(),
@@ -145,6 +166,7 @@ impl WorkerRuntime {
         }
     }
 
+    /// Dispatches one worker request and returns response plus exit flag.
     async fn handle_request(&mut self, request: ExecRequest) -> (ExecResponse, bool) {
         match request {
             ExecRequest::Ping {} => (ExecResponse::Pong {}, false),
@@ -259,6 +281,7 @@ impl WorkerRuntime {
         }
     }
 
+    /// Spawns a new child process and tracks it under the provided job id.
     async fn run_job(
         &mut self,
         job_id: JobId,
@@ -327,6 +350,7 @@ impl WorkerRuntime {
         Ok(ExecResponse::JobStarted { job_id, pid })
     }
 
+    /// Returns current status for a tracked job, refreshing process state first.
     async fn job_status(&mut self, job_id: JobId) -> Result<ExecResponse, PlanterError> {
         let job = self.get_job_mut(&job_id)?;
         refresh_job(job)?;
@@ -338,6 +362,7 @@ impl WorkerRuntime {
         })
     }
 
+    /// Sends termination signals to a tracked job and updates cached metadata.
     async fn job_signal(
         &mut self,
         job_id: JobId,
@@ -362,6 +387,7 @@ impl WorkerRuntime {
         })
     }
 
+    /// Returns a resource usage sample for a tracked job.
     async fn usage_probe(&mut self, job_id: JobId) -> Result<ExecResponse, PlanterError> {
         let job = self.get_job_mut(&job_id)?;
         refresh_job(job)?;
@@ -376,6 +402,7 @@ impl WorkerRuntime {
         })
     }
 
+    /// Terminates all running jobs during worker shutdown.
     async fn shutdown(&mut self, force: bool) {
         for job in self.jobs.values_mut() {
             if matches!(job.status, ExitStatus::Running) {
@@ -391,6 +418,7 @@ impl WorkerRuntime {
         }
     }
 
+    /// Looks up a mutable job by id or returns a not-found error.
     fn get_job_mut(&mut self, job_id: &JobId) -> Result<&mut WorkerJob, PlanterError> {
         self.jobs.get_mut(job_id).ok_or_else(|| PlanterError {
             code: ErrorCode::NotFound,
@@ -400,6 +428,7 @@ impl WorkerRuntime {
     }
 }
 
+/// Maps internal result types into protocol error envelopes.
 fn map_result(result: Result<ExecResponse, PlanterError>) -> ExecResponse {
     match result {
         Ok(response) => response,
@@ -411,6 +440,7 @@ fn map_result(result: Result<ExecResponse, PlanterError>) -> ExecResponse {
     }
 }
 
+/// Encodes and writes one response envelope to the control stream.
 async fn write_response(
     stream: &mut UnixStream,
     req_id: u64,
@@ -422,6 +452,7 @@ async fn write_response(
     Ok(())
 }
 
+/// Ensures the parent directory exists for a file path.
 fn ensure_parent_dir(path: &str) -> Result<(), PlanterError> {
     if let Some(parent) = Path::new(path).parent()
         && !parent.as_os_str().is_empty()
@@ -431,6 +462,7 @@ fn ensure_parent_dir(path: &str) -> Result<(), PlanterError> {
     Ok(())
 }
 
+/// Refreshes cached job status by polling child process completion.
 fn refresh_job(job: &mut WorkerJob) -> Result<(), PlanterError> {
     if !matches!(job.status, ExitStatus::Running) {
         return Ok(());
@@ -453,6 +485,7 @@ fn refresh_job(job: &mut WorkerJob) -> Result<(), PlanterError> {
     Ok(())
 }
 
+/// Sends graceful/forceful signals to a child process tree.
 async fn signal_job(child: &mut Child, force: bool) {
     if let Some(pid) = child.id() {
         if force {
@@ -472,6 +505,7 @@ async fn signal_job(child: &mut Child, force: bool) {
     }
 }
 
+/// Sends a unix signal to a process id.
 fn send_signal(pid: u32, signal: &str) -> Result<(), std::io::Error> {
     let status = StdCommand::new("/bin/kill")
         .arg(format!("-{signal}"))
@@ -485,6 +519,7 @@ fn send_signal(pid: u32, signal: &str) -> Result<(), std::io::Error> {
     )))
 }
 
+/// Sends a unix signal to direct child processes of a pid.
 fn send_signal_to_children(pid: u32, signal: &str) -> Result<(), std::io::Error> {
     let status = StdCommand::new("/usr/bin/pkill")
         .arg(format!("-{signal}"))
@@ -499,6 +534,7 @@ fn send_signal_to_children(pid: u32, signal: &str) -> Result<(), std::io::Error>
     )))
 }
 
+/// Returns whether a pid is currently alive.
 fn process_alive(pid: u32) -> Result<bool, std::io::Error> {
     let status = StdCommand::new("/bin/kill")
         .arg("-0")
@@ -507,6 +543,7 @@ fn process_alive(pid: u32) -> Result<bool, std::io::Error> {
     Ok(status.success())
 }
 
+/// Samples RSS bytes for a pid using `ps`.
 fn read_rss_bytes(pid: u32) -> Result<Option<u64>, std::io::Error> {
     let output = StdCommand::new("/bin/ps")
         .arg("-o")
@@ -524,6 +561,7 @@ fn read_rss_bytes(pid: u32) -> Result<Option<u64>, std::io::Error> {
     Ok(rss_kb.map(|v| v.saturating_mul(1024)))
 }
 
+/// Converts I/O errors into standardized planter errors.
 fn io_to_planter_error(action: &str, err: std::io::Error) -> PlanterError {
     PlanterError {
         code: ErrorCode::Internal,
@@ -549,6 +587,7 @@ mod tests {
     use tokio::io::AsyncWriteExt;
     use tokio::net::UnixStream;
 
+    /// Creates a nonblocking unix stream pair for control-loop tests.
     async fn pair() -> (UnixStream, UnixStream) {
         let (left, right) =
             std::os::unix::net::UnixStream::pair().expect("create unix stream pair");
@@ -560,6 +599,7 @@ mod tests {
         )
     }
 
+    /// Sends one request frame and decodes the worker response envelope.
     async fn send(stream: &mut UnixStream, req_id: u64, body: ExecRequest) -> ExecResponseEnvelope {
         let request = ExecRequestEnvelope { req_id, body };
         let payload = encode(&request).expect("encode request");
@@ -569,6 +609,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// Verifies handshake and ping succeed for matching auth and protocol.
     async fn hello_and_ping_succeed() {
         let tmp = tempdir().expect("tempdir");
         let (server_stream, mut client_stream) = pair().await;
@@ -606,6 +647,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// Verifies job execution and subsequent status query behavior.
     async fn run_job_and_query_status() {
         let tmp = tempdir().expect("tempdir");
         let (server_stream, mut client_stream) = pair().await;
@@ -678,6 +720,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// Verifies hello fails when auth token does not match worker config.
     async fn rejects_wrong_auth_token() {
         let tmp = tempdir().expect("tempdir");
         let (server_stream, mut client_stream) = pair().await;
@@ -713,6 +756,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies invalid fds are rejected before stream conversion.
     fn control_stream_from_fd_rejects_bad_fd() {
         let result = super::control_stream_from_fd(-1);
         assert!(result.is_err());

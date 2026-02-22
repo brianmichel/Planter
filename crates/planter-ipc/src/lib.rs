@@ -1,3 +1,5 @@
+//! Async CBOR-over-UNIX-socket transport used by planter components.
+
 mod error;
 
 pub mod client;
