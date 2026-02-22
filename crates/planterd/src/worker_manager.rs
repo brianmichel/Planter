@@ -23,12 +23,14 @@ use crate::worker::{WorkerClient, new_auth_token};
 
 const DEFAULT_WORKER_BIN: &str = "target/debug/planter-execd";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(2_000);
+type CallLock = Arc<AsyncMutex<()>>;
+type CallLockMap = HashMap<String, CallLock>;
 
 pub struct WorkerManager {
     worker_bin: PathBuf,
     state_root: PathBuf,
     workers: Mutex<HashMap<String, WorkerHandle>>,
-    call_locks: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
+    call_locks: Mutex<CallLockMap>,
 }
 
 struct WorkerHandle {
@@ -252,7 +254,7 @@ impl WorkerManager {
         })
     }
 
-    fn get_call_lock(&self, key: &str) -> Result<Arc<AsyncMutex<()>>, PlanterError> {
+    fn get_call_lock(&self, key: &str) -> Result<CallLock, PlanterError> {
         let mut locks = self.call_locks_lock()?;
         if let Some(lock) = locks.get(key) {
             return Ok(Arc::clone(lock));
@@ -262,9 +264,7 @@ impl WorkerManager {
         Ok(lock)
     }
 
-    fn call_locks_lock(
-        &self,
-    ) -> Result<MutexGuard<'_, HashMap<String, Arc<AsyncMutex<()>>>>, PlanterError> {
+    fn call_locks_lock(&self) -> Result<MutexGuard<'_, CallLockMap>, PlanterError> {
         self.call_locks.lock().map_err(|_| PlanterError {
             code: ErrorCode::Internal,
             message: "worker manager call-lock map poisoned".to_string(),
